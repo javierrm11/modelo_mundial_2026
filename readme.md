@@ -279,7 +279,9 @@ pip install -r requirements.txt
 # Copiar y rellenar variables de entorno
 cp .env.example .env
 
-# Descargar datasets (ver instrucciones en data/raw/README.md)
+# Descargar todas las fuentes de datos a data/raw/
+python scripts/download_data.py
+
 # Entrenar el modelo
 python scripts/train.py
 
