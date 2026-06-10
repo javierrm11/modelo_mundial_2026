@@ -1,327 +1,124 @@
-# Mundial 2026 — Predicción con IA
+# Mundial 2026 — Predicción con ML
 
-![Status](https://img.shields.io/badge/status-in%20development-yellow)
-![Python](https://img.shields.io/badge/python-3.11+-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+Sistema de predicción del Mundial 2026 construido paso a paso, desde la recopilación de datos hasta el modelo final.
 
-Sistema de predicción del Mundial de Fútbol 2026 basado en un modelo híbrido de **regresión de Poisson + Gradient Boosting** sobre features combinadas de **selección y jugador**, con simulación Monte Carlo del cuadro completo y recalibración por rondas.
-
-> El Mundial 2026 se celebra del **11 de junio al 19 de julio de 2026** en Estados Unidos, México y Canadá. Es la primera edición con **48 selecciones** distribuidas en 12 grupos de 4, jugándose **104 partidos** en total.
+> 48 selecciones · 104 partidos · 11 jun – 19 jul 2026
 
 ---
 
-## Tabla de contenidos
+## Estado actual
 
-1. [Objetivo del proyecto](#objetivo-del-proyecto)
-2. [Arquitectura del sistema](#arquitectura-del-sistema)
-3. [Stack tecnológico](#stack-tecnológico)
-4. [Estructura del repositorio](#estructura-del-repositorio)
-5. [Fuentes de datos](#fuentes-de-datos)
-6. [Modelado](#modelado)
-7. [Sistema de recalibración](#sistema-de-recalibración)
-8. [Roadmap](#roadmap)
-9. [Instalación y uso](#instalación-y-uso)
-10. [Resultados](#resultados)
-11. [Disclaimer](#disclaimer)
-12. [Autor](#autor)
+| Paso | Estado | Descripción |
+|---|---|---|
+| 1. Datos históricos de partidos | ✅ | `results.csv` — 45k partidos desde 1872 (Kaggle) |
+| 2. Convocatorias 2026 | ✅ | 48 selecciones × 26 jugadores vía football-data.org API |
+| 3. Datos de jugadores | ✅ | `players.csv` + `player_valuations.csv` (Transfermarkt, Kaggle) |
+| 4. Tabla maestra de nombres | pendiente | Unificar nombres de equipos entre fuentes |
+| 5. Elo dinámico | pendiente | Calcular sobre `results.csv` partido a partido |
+| 6. Features de plantilla | pendiente | Agregar stats de jugadores a nivel selección |
+| 7. Dataset final | pendiente | Unir todo a nivel partido |
+| 8. Modelo | pendiente | |
 
 ---
 
-## Objetivo del proyecto
+## Datos
 
-Construir un sistema reproducible que produzca:
+### Partidos históricos
+- **Fuente:** Kaggle — *International Football Results from 1872 to 2026*
+- **Archivo:** `datos/historico de partidos/results.csv`
+- **Columnas:** `date, home_team, away_team, home_score, away_score, tournament, neutral`
 
-- **Probabilidades partido a partido** para los 104 encuentros del torneo.
-- **Cuadro completo predicho** (grupos, octavos, cuartos, semifinales, final) con probabilidad de avance por selección en cada ronda.
-- **Predicción del campeón** con intervalo de confianza derivado de la simulación Monte Carlo.
+### Convocatorias FIFA 2026
+- **Fuente:** football-data.org API (token en `.env`)
+- **Script:** `scripts/fetch_convocatoria.py`
+- **Archivo:** `datos/jugadores/convocatoria/convocatoria.csv`
+- **Columnas:** `team_id, team_name, player_id, player_name, position, date_of_birth, nationality, shirt_number`
 
-El sistema se diseña para **recalibrarse al final de cada fase**, integrando los resultados reales y emitiendo una predicción actualizada de lo que queda del torneo.
+### Jugadores — Transfermarkt
+- **Fuente:** Kaggle — *Football Data from Transfermarkt*
+- **Archivos:** `datos/jugadores/transfermarket/players.csv`, `player_valuations.csv`
+- **Features clave:** `market_value_in_eur, international_caps, international_goals, position, date_of_birth`
 
 ---
 
-## Arquitectura del sistema
+## Pipeline de construcción
 
-El proyecto se estructura en tres componentes desacoplados que se ejecutan en pipeline:
+El problema central es que el modelo necesita una fila por partido con todas las features de ambos equipos. Los datos viven en niveles distintos y hay que alinearlos.
 
 ```
-┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
-│   1. PREDICTOR      │    │   2. SIMULADOR       │    │  3. RECALIBRADOR    │
-│  partido único      │───▶│  Monte Carlo del     │───▶│  ronda a ronda      │
-│                     │    │  torneo completo     │    │                     │
-│ • Poisson → goles   │    │ • 10.000 simulaciones│    │ • Actualiza Elo     │
-│ • GBM → P(victoria) │    │ • Bracket dinámico   │    │ • Refresca forma    │
-│ • Ensemble          │    │ • P(avance) por ronda│    │ • Re-simula         │
-└─────────────────────┘    └──────────────────────┘    └─────────────────────┘
+results.csv (nivel partido)
+    └── + Elo calculado partido a partido
+    └── + features de plantilla (convocatoria → players → agregado por equipo)
+    └── = tabla final: partido × features_local × features_visitante × resultado
 ```
 
-### 1. Predictor de partido único
+### El problema de los nombres
+Cada fuente usa nombres distintos para el mismo equipo:
 
-Toma dos selecciones y devuelve la distribución de probabilidad del resultado:
+| results.csv | football-data.org | Transfermarkt |
+|---|---|---|
+| USA | United States | Vereinigte Staaten |
+| South Korea | Korea Republic | Südkorea |
+| Bosnia-Herzegovina | Bosnia-Herzegovina | Bosnien-Herzegowina |
 
-- **Modelo de goles** (Poisson regression bivariada): predice `λ_local` y `λ_visitante`, los goles esperados de cada equipo.
-- **Modelo de resultado** (Gradient Boosting con LightGBM): predice directamente `P(victoria local)`, `P(empate)`, `P(victoria visitante)`.
-- **Ensemble**: media calibrada de ambos modelos, con peso ajustable por validación cruzada.
+**Paso 1** antes de todo: tabla maestra `team_name_master.csv` que unifica las tres fuentes.
 
-### 2. Simulador Monte Carlo del torneo
+### Elo dinámico
+Se calcula sobre `results.csv` iterando cronológicamente. Cada equipo empieza en 1500.
 
-Ejecuta 10.000 simulaciones del torneo desde el estado actual:
+```
+K = 40 (Mundiales) / 30 (eliminatorias) / 20 (amistosos)
+expected = 1 / (1 + 10^((elo_rival - elo_equipo) / 400))
+nuevo_elo = elo + K * (resultado - expected)
+```
 
-- Para la **fase de grupos**, simula los 72 partidos (12 grupos × 6 partidos/grupo) y aplica los criterios oficiales de desempate FIFA.
-- Para las **eliminatorias**, simula cada cruce respetando el bracket. Si hay empate en 90 minutos, simula prórroga (multiplicador 0.5 a los λ) y penaltis (modelo aparte basado en estadísticas históricas).
-- Agrega los resultados → `P(cada selección alcanza la fase X)`.
+El Elo **antes de cada partido** se guarda como feature — no el posterior.
 
-### 3. Sistema de recalibración
+### Features de plantilla (nivel equipo)
+Desde `convocatoria.csv` → join `players.csv` → agregado por selección:
 
-Al cerrarse cada fase, los resultados reales se integran:
-
-- **Elo dinámico**: cada partido jugado actualiza el rating de las dos selecciones según el algoritmo de FIFA Women's Ranking adaptado (K=60 para Mundial).
-- **Forma reciente**: el feature de últimos 5 partidos se desplaza con los datos nuevos.
-- **Re-simulación**: con el bracket parcialmente resuelto, solo se simulan los partidos restantes.
-
----
-
-## Stack tecnológico
-
-| Capa | Herramienta |
-|---|---|
-| Lenguaje | Python 3.11+ |
-| Manipulación de datos | pandas, NumPy |
-| Modelos | scikit-learn, LightGBM, statsmodels (Poisson) |
-| Simulación | NumPy (vectorizada) + scipy.stats |
-| Visualización | matplotlib, seaborn, plotly |
-| Notebooks de exploración | Jupyter |
-| Tests | pytest |
-| Gestión de entorno | uv / venv + requirements.txt |
-| Configuración | python-dotenv |
+- `squad_market_value_total`
+- `squad_market_value_avg`
+- `international_caps_avg`
+- `international_goals_total`
 
 ---
 
 ## Estructura del repositorio
 
 ```
-mundial-2026-prediction/
+Modelo Mundial/
+├── .env                          # FOOTBALL_DATA_API token
+├── readme.md
 │
-├── README.md
-├── requirements.txt
-├── .env.example
-├── .gitignore
+├── datos/
+│   ├── historico de partidos/
+│   │   └── results.csv           # Partidos 1872-2026
+│   └── jugadores/
+│       ├── convocatoria/
+│       │   └── convocatoria.csv  # 48 selecciones × 26 jugadores
+│       └── transfermarket/
+│           ├── players.csv
+│           └── player_valuations.csv
 │
-├── data/
-│   ├── raw/                    # CSVs originales sin modificar
-│   ├── interim/                # Datos limpios y unificados
-│   └── processed/              # Datasets finales con features listos
-│
-├── notebooks/
-│   ├── 01_exploration.ipynb    # EDA de fuentes de datos
-│   ├── 02_features.ipynb       # Diseño y validación de features
-│   ├── 03_modeling.ipynb       # Entrenamiento y comparación de modelos
-│   └── 04_simulation.ipynb     # Monte Carlo y resultados
-│
-├── src/
-│   ├── __init__.py
-│   │
-│   ├── data/
-│   │   ├── loaders.py          # Carga desde cada fuente (CSV, scraping, API)
-│   │   ├── elo.py              # Cálculo del Elo dinámico
-│   │   └── preprocessing.py    # Limpieza y unificación
-│   │
-│   ├── features/
-│   │   ├── team_features.py    # Features a nivel selección
-│   │   ├── player_features.py  # Features agregadas a nivel jugador
-│   │   └── match_features.py   # Features del enfrentamiento (H2H, etc.)
-│   │
-│   ├── models/
-│   │   ├── poisson_model.py    # Regresión de Poisson para goles
-│   │   ├── gbm_model.py        # LightGBM para resultado
-│   │   └── ensemble.py         # Combinación de ambos modelos
-│   │
-│   ├── simulation/
-│   │   ├── monte_carlo.py      # Motor de simulación
-│   │   ├── group_stage.py      # Reglas de desempate FIFA
-│   │   ├── knockout.py         # Bracket eliminatorio
-│   │   └── tiebreaker.py       # Prórroga y penaltis
-│   │
-│   └── utils/
-│       ├── config.py
-│       └── viz.py              # Heatmaps, brackets, gráficos
-│
-├── scripts/
-│   ├── train.py                # Entrena los modelos desde cero
-│   ├── predict.py              # Genera la predicción del torneo
-│   └── recalibrate.py          # Re-entrena tras cada fase
-│
-├── outputs/
-│   ├── predictions/            # JSON/CSV con probabilidades por versión
-│   └── figures/                # Visualizaciones para contenido
-│
-└── tests/
-    └── ...                     # pytest sobre src/
+└── scripts/
+    └── fetch_convocatoria.py     # Descarga convocatorias de football-data.org
 ```
 
 ---
 
-## Fuentes de datos
+## Stack
 
-### Histórico de partidos (entrenamiento)
-
-- **[International Football Results from 1872 to 2026](https://www.kaggle.com/datasets/martj42/international-football-results-from-1872-to-2017)** — Kaggle. Base del dataset histórico, con ~45k partidos internacionales etiquetados por tipo (Mundial, eliminatorias, Nations League, Copa América, amistoso).
-- **FIFA Rankings históricos** — para feature de ranking previo al partido.
-- **Cálculo de Elo dinámico** propio sobre el dataset anterior.
-
-**Ventana temporal**: últimos 4 años (ciclo mundialista 2022 → 2026) para evitar contaminación generacional.
-
-**Ponderación**: partidos competitivos (eliminatorias, Nations League, Copa América, Mundiales, Eurocopa) con peso `1.0`. Partidos amistosos ponderados a `0.3` durante el entrenamiento.
-
-### Datos a nivel jugador (features de plantilla)
-
-- **[FBref](https://fbref.com)** — xG, xA, minutos, goles y métricas avanzadas por jugador y temporada.
-- **[Transfermarkt](https://www.transfermarkt.com)** — valor de mercado por jugador.
-- **Convocatorias oficiales FIFA** del Mundial 2026 — los 26 jugadores por selección.
-
-### Configuración del torneo
-
-- **Calendario oficial FIFA 2026** — sedes, horarios, condiciones (altitud Ciudad de México, calor en sedes USA).
-- **Bracket oficial** tras el sorteo.
-
----
-
-## Modelado
-
-### Por qué Poisson + Gradient Boosting
-
-El modelado de fútbol tiene un consenso académico bastante asentado: **los goles siguen aproximadamente una distribución de Poisson**, y la regresión de Poisson bivariada (Dixon-Coles, 1997) sigue siendo la referencia. El Gradient Boosting añade no-linealidades y captura interacciones entre features que la Poisson no modela bien.
-
-**Las redes neuronales no se eligieron** porque en problemas tabulares con pocos miles de muestras, el gradient boosting suele igualarlas o superarlas con mucho menos coste computacional y mejor interpretabilidad.
-
-### Features a nivel selección
-
-| Feature | Descripción |
+| | |
 |---|---|
-| `elo_team` | Elo dinámico actualizado hasta el partido. |
-| `fifa_ranking` | Ranking FIFA en el mes del partido. |
-| `form_last_5` | Puntos ponderados de los últimos 5 partidos competitivos. |
-| `goals_for_avg` | Media de goles a favor en los últimos 10 partidos. |
-| `goals_against_avg` | Media de goles en contra en los últimos 10 partidos. |
-| `days_rest` | Días desde el último partido. |
-| `is_host` | 1 si la selección juega en su país anfitrión. |
-| `confederation` | UEFA / CONMEBOL / CONCACAF / etc. |
-
-### Features agregadas a nivel jugador
-
-Se computan sobre los **11 titulares más probables** ponderados por minutos jugados con la selección en los últimos 12 meses:
-
-| Feature | Descripción |
-|---|---|
-| `squad_market_value` | Suma del valor de mercado de la convocatoria. |
-| `xg_per90_avg` | Media de xG/90 minutos de los delanteros titulares. |
-| `xa_per90_avg` | Media de xA/90 de centrocampistas titulares. |
-| `league_strength_avg` | Coeficiente medio de fuerza de las ligas de los titulares. |
-| `gk_save_pct` | % de paradas del portero titular. |
-| `defenders_xga` | xGA acumulado por la defensa titular. |
-
-### Features del enfrentamiento
-
-| Feature | Descripción |
-|---|---|
-| `elo_diff` | Diferencia de Elo entre las dos selecciones. |
-| `h2h_last_5` | Resultados directos en los últimos 5 enfrentamientos. |
-| `same_confederation` | 1 si comparten confederación. |
-| `venue_altitude` | Altitud de la sede (relevante para CDMX, Guadalajara). |
-
-### Variable objetivo
-
-- **Modelo Poisson**: número de goles de cada equipo.
-- **Modelo GBM**: clase del resultado en formato one-hot (`local_win`, `draw`, `away_win`).
-
-### Validación
-
-- División temporal: train hasta 2024, validación 2025, test sobre clasificación europea 2025–2026.
-- Métricas: log loss, Brier score, accuracy. Comparación contra baseline de cuotas de casas de apuestas.
-
----
-
-## Sistema de recalibración
-
-Tras cada ronda jugada del Mundial se ejecuta `scripts/recalibrate.py`:
-
-1. Ingesta los resultados oficiales de los partidos disputados.
-2. Actualiza el Elo dinámico de las selecciones implicadas.
-3. Refresca las features de forma reciente.
-4. Re-ejecuta el simulador Monte Carlo **únicamente sobre los partidos pendientes**.
-5. Emite un nuevo informe de predicciones versionado: `outputs/predictions/v1_pre.json`, `v2_post_groups.json`, `v3_post_r16.json`, etc.
-
----
-
-## Roadmap
-
-| Fase | Estado | Descripción |
-|---|---|---|
-| **v0 — MVP pre-torneo** | en desarrollo | Modelo solo a nivel selección (Elo + ranking FIFA + forma). Poisson básico. Primera predicción del torneo antes del 11/6. |
-| **v1 — Modelo híbrido** | pendiente | Añadir features de plantilla (xG, valor de mercado, fuerza de liga). Ensemble Poisson + GBM. |
-| **v2 — Recalibración** | pendiente | Pipeline automatizado de actualización tras fase de grupos. |
-| **v3 — Recalibración por ronda** | pendiente | Actualización tras octavos, cuartos, semifinales. |
-| **v4 — Post-mortem** | pendiente | Análisis comparativo predicción vs realidad. Identificación de fallos del modelo. |
-
----
-
-## Instalación y uso
-
-```bash
-# Clonar el repositorio
-git clone https://github.com/molerodev/mundial-2026-prediction.git
-cd mundial-2026-prediction
-
-# Crear entorno virtual e instalar dependencias
-python -m venv .venv
-source .venv/bin/activate  # En Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-# Copiar y rellenar variables de entorno
-cp .env.example .env
-
-# Descargar todas las fuentes de datos a data/raw/
-python scripts/download_data.py
-
-# Entrenar el modelo
-python scripts/train.py
-
-# Generar predicción del torneo completo
-python scripts/predict.py --output outputs/predictions/v1_pre.json
-
-# Tras cada fase, recalibrar
-python scripts/recalibrate.py --phase groups
-```
-
----
-
-## Resultados
-
-> Esta sección se actualizará con cada versión del modelo.
-
-### v0 — Predicción pre-torneo (pendiente)
-
-- Campeón más probable: _por determinar_
-- Top 4 favoritos: _por determinar_
-- Probabilidades por grupo: _por determinar_
-
----
-
-## Disclaimer
-
-Este proyecto tiene **fines educativos y de divulgación**. Las predicciones generadas por modelos de Machine Learning aplicados al fútbol tienen un margen de error significativo y **no constituyen asesoramiento de apuestas**.
+| Lenguaje | Python 3.10+ |
+| Datos | pandas, numpy |
+| API | requests, python-dotenv |
+| Modelo | scikit-learn, LightGBM |
+| Entorno | venv |
 
 ---
 
 ## Autor
 
-**Javier Molero** — Desarrollador full-stack y creador de contenido técnico.
-
-- Web: [javierm.dev](https://javierm.dev)
-- YouTube: [@molerodev](https://youtube.com/@molerodev)
-- LinkedIn: _por añadir_
-
----
-
-## Licencia
-
-MIT License. Ver `LICENSE` para más detalles.
+**Javier Molero**
