@@ -13,6 +13,8 @@ PASOS = [
     ("Paso 5 - Elo dinamico",              "scripts/build_elo.py"),
     ("Paso 6 - Features de plantilla",     "scripts/build_squad_features.py"),
     ("Paso 7 - Dataset final",             "scripts/build_dataset.py"),
+    ("Paso 8 - Modelo de goles (Poisson)", "scripts/train_model.py"),
+    ("Paso 9 - Simulacion del Mundial",    "scripts/simulate_tournament.py"),
 ]
 
 python = sys.executable

@@ -17,7 +17,7 @@ Sistema de predicción del Mundial 2026 construido paso a paso, desde la recopil
 | 5. Elo dinámico | ✅ | `elo_por_partido.csv` — 49,400 partidos con Elo pre/post |
 | 6. Features de plantilla | ✅ | `squad_features.csv` — valor de mercado, caps, edad por selección |
 | 7. Dataset final | ✅ | `dataset_final.csv` — 7,527 partidos entre equipos del Mundial |
-| 8. Modelo | pendiente | |
+| 8. Modelo + simulación | ✅ | Poisson (LightGBM) + Monte Carlo del torneo → `predicciones_mundial2026.csv` |
 
 ---
 
@@ -82,6 +82,54 @@ Desde `convocatoria.csv` → join `players.csv` → agregado por selección:
 - `international_caps_avg`
 - `international_goals_total`
 
+El join usa `player_id` y, como respaldo, el nombre normalizado (sin tildes/
+mayúsculas), porque los IDs de football-data.org y Transfermarkt no coinciden.
+Cobertura típica: 19–26 de los 26 jugadores por selección.
+
+> ⚠️ Las features de plantilla son **constantes por equipo** (valores de la
+> convocatoria 2026 aplicados a todo el histórico). Sirven como proxy de la
+> "fuerza base" de la selección, no como feature temporalmente realista. El Elo
+> sí es temporal (pre-partido).
+
+### Modelo (paso 8)
+**Modelo de goles Poisson** (`scripts/train_model.py`):
+
+- Formato largo: cada partido → 2 filas (perspectiva de cada equipo que marca).
+- `LightGBM` con objetivo `poisson` predice los goles esperados (λ) de un equipo
+  contra otro a partir de `elo_diff`, ventaja de campo y features de plantilla.
+- Validación **temporal** (entrena < 2018, valida ≥ 2018, incluye Mundiales
+  2018 y 2022). Métricas sobre el 1X2 derivado de los dos λ:
+
+  | | Modelo | Baseline |
+  |---|---|---|
+  | Log-loss | **1.00** | 1.10 (uniforme) |
+  | Accuracy | **50.5 %** | 44.8 % (clase mayoritaria) |
+
+**Simulación Monte Carlo** (`scripts/simulate_tournament.py`):
+
+- Precalcula la matriz de goles esperados entre las 48 selecciones.
+- Simula el torneo completo (12 grupos de 4 → 1º, 2º y 8 mejores terceros →
+  dieciseisavos → final) **10.000 veces** muestreando marcadores con Poisson y
+  resolviendo empates de eliminatoria por penaltis ponderados por Elo.
+- Salida: `predicciones_mundial2026.csv` con % de campeón, final, semis, etc.
+
+> El cuadro de grupos se lee de `datos/master/groups_2026.csv`. Si no existe se
+> genera un **sorteo sembrado por Elo** (4 bombos) — reemplázalo por el sorteo
+> oficial cuando se conozca. El cuadro de eliminatorias se siembra por
+> rendimiento en la fase de grupos (aproximación del bracket oficial).
+
+---
+
+## Cómo ejecutar
+
+```bash
+# Pipeline completo (pasos 4 → 9)
+python scripts/run_pipeline.py
+
+# Solo re-simular el torneo (con N simulaciones)
+python scripts/simulate_tournament.py 10000
+```
+
 ---
 
 ## Estructura del repositorio
@@ -105,7 +153,13 @@ Modelo Mundial/
 │       ├── team_name_master.csv  # Correspondencia de nombres (3 fuentes)
 │       ├── elo_por_partido.csv   # Elo pre/post para los 49k partidos
 │       ├── squad_features.csv    # Features de plantilla por selección
-│       └── dataset_final.csv     # Dataset listo para el modelo
+│       ├── dataset_final.csv     # Dataset listo para el modelo
+│       ├── team_state_2026.csv   # Elo actual + plantilla por selección
+│       ├── groups_2026.csv       # Cuadro de grupos (editable)
+│       └── predicciones_mundial2026.csv  # Salida de la simulación
+│
+├── modelos/
+│   └── goal_model.pkl            # Modelo Poisson entrenado
 │
 └── scripts/
     ├── fetch_convocatoria.py     # Descarga convocatorias de football-data.org
@@ -113,7 +167,9 @@ Modelo Mundial/
     ├── build_elo.py              # Paso 5 — Elo dinámico
     ├── build_squad_features.py   # Paso 6 — features de plantilla
     ├── build_dataset.py          # Paso 7 — dataset final
-    └── run_pipeline.py           # Ejecuta pasos 4-7 en orden
+    ├── train_model.py            # Paso 8 — modelo de goles (Poisson)
+    ├── simulate_tournament.py    # Paso 9 — simulación Monte Carlo
+    └── run_pipeline.py           # Ejecuta pasos 4-9 en orden
 ```
 
 ---
