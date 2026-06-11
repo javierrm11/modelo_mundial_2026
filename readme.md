@@ -13,10 +13,10 @@ Sistema de predicción del Mundial 2026 construido paso a paso, desde la recopil
 | 1. Datos históricos de partidos | ✅ | `results.csv` — 45k partidos desde 1872 (Kaggle) |
 | 2. Convocatorias 2026 | ✅ | 48 selecciones × 26 jugadores vía football-data.org API |
 | 3. Datos de jugadores | ✅ | `players.csv` + `player_valuations.csv` (Transfermarkt, Kaggle) |
-| 4. Tabla maestra de nombres | pendiente | Unificar nombres de equipos entre fuentes |
-| 5. Elo dinámico | pendiente | Calcular sobre `results.csv` partido a partido |
-| 6. Features de plantilla | pendiente | Agregar stats de jugadores a nivel selección |
-| 7. Dataset final | pendiente | Unir todo a nivel partido |
+| 4. Tabla maestra de nombres | ✅ | `team_name_master.csv` — 48 equipos, 3 fuentes unificadas |
+| 5. Elo dinámico | ✅ | `elo_por_partido.csv` — 49,400 partidos con Elo pre/post |
+| 6. Features de plantilla | ✅ | `squad_features.csv` — valor de mercado, caps, edad por selección |
+| 7. Dataset final | ✅ | `dataset_final.csv` — 7,527 partidos entre equipos del Mundial |
 | 8. Modelo | pendiente | |
 
 ---
@@ -25,8 +25,8 @@ Sistema de predicción del Mundial 2026 construido paso a paso, desde la recopil
 
 ### Partidos históricos
 - **Fuente:** Kaggle — *International Football Results from 1872 to 2026*
-- **Archivo:** `datos/historico de partidos/results.csv`
-- **Columnas:** `date, home_team, away_team, home_score, away_score, tournament, neutral`
+- **Archivo:** `datos/historico de partidos/[International Football Results from 1872 to 2026/results.csv`
+- **Columnas:** `date, home_team, away_team, home_score, away_score, tournament, city, country, neutral`
 
 ### Convocatorias FIFA 2026
 - **Fuente:** football-data.org API (token en `.env`)
@@ -93,16 +93,27 @@ Modelo Mundial/
 │
 ├── datos/
 │   ├── historico de partidos/
-│   │   └── results.csv           # Partidos 1872-2026
-│   └── jugadores/
-│       ├── convocatoria/
-│       │   └── convocatoria.csv  # 48 selecciones × 26 jugadores
-│       └── transfermarket/
-│           ├── players.csv
-│           └── player_valuations.csv
+│   │   └── [International Football Results from 1872 to 2026/
+│   │       └── results.csv       # Partidos 1872-2026
+│   ├── jugadores/
+│   │   ├── convocatoria/
+│   │   │   └── convocatoria.csv  # 48 selecciones × 26 jugadores
+│   │   └── transfermarket/
+│   │       ├── players.csv
+│   │       └── player_valuations.csv
+│   └── master/                   # Generado por el pipeline
+│       ├── team_name_master.csv  # Correspondencia de nombres (3 fuentes)
+│       ├── elo_por_partido.csv   # Elo pre/post para los 49k partidos
+│       ├── squad_features.csv    # Features de plantilla por selección
+│       └── dataset_final.csv     # Dataset listo para el modelo
 │
 └── scripts/
-    └── fetch_convocatoria.py     # Descarga convocatorias de football-data.org
+    ├── fetch_convocatoria.py     # Descarga convocatorias de football-data.org
+    ├── build_name_master.py      # Paso 4 — tabla maestra de nombres
+    ├── build_elo.py              # Paso 5 — Elo dinámico
+    ├── build_squad_features.py   # Paso 6 — features de plantilla
+    ├── build_dataset.py          # Paso 7 — dataset final
+    └── run_pipeline.py           # Ejecuta pasos 4-7 en orden
 ```
 
 ---
