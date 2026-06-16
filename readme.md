@@ -118,6 +118,22 @@ Cobertura típica: 19–26 de los 26 jugadores por selección.
 > oficial cuando se conozca. El cuadro de eliminatorias se siembra por
 > rendimiento en la fase de grupos (aproximación del bracket oficial).
 
+### Predicción partido a partido (`scripts/predict_fixtures.py`)
+Para predecir partidos concretos del cuadro real sin simular todo el torneo.
+Lee `datos/master/fixtures.csv` (editable):
+
+```
+home_team,away_team,fase
+Spain,Brazil,grupo
+Mexico,United States,eliminatoria
+```
+
+Por cada partido da el **1X2**, los **goles esperados (λ)** de cada equipo y los
+**5 marcadores más probables**. En las filas marcadas `eliminatoria` resuelve el
+empate con prórroga (λ·⅓) + penaltis ponderados por Elo y da el **P(pasa de
+ronda)** de cada equipo. Acepta alias en español (`España`, `Países Bajos`…).
+Salida en `datos/master/predicciones_partidos.csv`.
+
 ---
 
 ## Cómo ejecutar
@@ -128,6 +144,9 @@ python scripts/run_pipeline.py
 
 # Solo re-simular el torneo (con N simulaciones)
 python scripts/simulate_tournament.py 10000
+
+# Predecir partidos concretos (lee datos/master/fixtures.csv)
+python scripts/predict_fixtures.py
 ```
 
 ---
@@ -156,7 +175,9 @@ Modelo Mundial/
 │       ├── dataset_final.csv     # Dataset listo para el modelo
 │       ├── team_state_2026.csv   # Elo actual + plantilla por selección
 │       ├── groups_2026.csv       # Cuadro de grupos (editable)
-│       └── predicciones_mundial2026.csv  # Salida de la simulación
+│       ├── predicciones_mundial2026.csv  # Salida de la simulación
+│       ├── fixtures.csv          # Partidos a predecir (editable)
+│       └── predicciones_partidos.csv     # Salida partido a partido
 │
 ├── modelos/
 │   └── goal_model.pkl            # Modelo Poisson entrenado
@@ -169,6 +190,7 @@ Modelo Mundial/
     ├── build_dataset.py          # Paso 7 — dataset final
     ├── train_model.py            # Paso 8 — modelo de goles (Poisson)
     ├── simulate_tournament.py    # Paso 9 — simulación Monte Carlo
+    ├── predict_fixtures.py       # Predicción partido a partido
     └── run_pipeline.py           # Ejecuta pasos 4-9 en orden
 ```
 
