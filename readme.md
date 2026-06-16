@@ -97,13 +97,19 @@ Cobertura típica: 19–26 de los 26 jugadores por selección.
 - Formato largo: cada partido → 2 filas (perspectiva de cada equipo que marca).
 - `LightGBM` con objetivo `poisson` predice los goles esperados (λ) de un equipo
   contra otro a partir de `elo_diff`, ventaja de campo y features de plantilla.
+- **Corrección Dixon–Coles** (ρ por máxima verosimilitud): reajusta los marcadores
+  bajos (0-0, 1-0, 0-1, 1-1) para corregir la correlación entre goles.
+- **Calibración probabilística** (Platt multiclase con CV temporal *out-of-fold*):
+  ajusta el 1X2 final. Dixon–Coles y calibración se **componen**.
 - Validación **temporal** (entrena < 2018, valida ≥ 2018, incluye Mundiales
   2018 y 2022). Métricas sobre el 1X2 derivado de los dos λ:
 
-  | | Modelo | Baseline |
-  |---|---|---|
-  | Log-loss | **1.00** | 1.10 (uniforme) |
-  | Accuracy | **50.5 %** | 44.8 % (clase mayoritaria) |
+  | | Poisson indep. | + Dixon–Coles | + DC + calib. | Baseline |
+  |---|---|---|---|---|
+  | Log-loss | 1.003 | 1.002 | **0.999** | 1.10 (uniforme) |
+  | Brier | 0.601 | 0.600 | **0.598** | — |
+  | ECE | 0.048 | 0.042 | **0.024** | — |
+  | Accuracy | 51.0 % | 50.9 % | 50.4 % | 44.8 % (mayoritaria) |
 
 **Simulación Monte Carlo** (`scripts/simulate_tournament.py`):
 
@@ -117,22 +123,28 @@ Cobertura típica: 19–26 de los 26 jugadores por selección.
 > genera un **sorteo sembrado por Elo** (4 bombos) — reemplázalo por el sorteo
 > oficial cuando se conozca. El cuadro de eliminatorias se siembra por
 > rendimiento en la fase de grupos (aproximación del bracket oficial).
+> Los **anfitriones** (México, EE. UU., Canadá) tienen **ventaja de local** en
+> sus partidos de la fase de grupos (+0,36 goles de media, vía la feature `is_home`).
 
 ### Predicción partido a partido (`scripts/predict_fixtures.py`)
 Para predecir partidos concretos del cuadro real sin simular todo el torneo.
 Lee `datos/master/fixtures.csv` (editable):
 
 ```
-home_team,away_team,fase
-Spain,Brazil,grupo
-Mexico,United States,eliminatoria
+home_team,away_team,fase,local
+Spain,Brazil,grupo,
+Mexico,Croatia,grupo,
+Mexico,United States,eliminatoria,neutral
 ```
 
 Por cada partido da el **1X2**, los **goles esperados (λ)** de cada equipo y los
 **5 marcadores más probables**. En las filas marcadas `eliminatoria` resuelve el
 empate con prórroga (λ·⅓) + penaltis ponderados por Elo y da el **P(pasa de
 ronda)** de cada equipo. Acepta alias en español (`España`, `Países Bajos`…).
-Salida en `datos/master/predicciones_partidos.csv`.
+
+La columna opcional **`local`** controla la ventaja de campo: vacía → automática
+(el anfitrión del Mundial juega en casa); `neutral` → fuerza campo neutral; un
+equipo → ese equipo es local. Salida en `datos/master/predicciones_partidos.csv`.
 
 ---
 
@@ -193,6 +205,30 @@ Modelo Mundial/
     ├── predict_fixtures.py       # Predicción partido a partido
     └── run_pipeline.py           # Ejecuta pasos 4-9 en orden
 ```
+
+---
+
+## Posibles mejoras
+
+Ideas para seguir desarrollando el proyecto, de mayor a menor impacto:
+
+- **⭐ Evaluar el modelo contra los resultados reales.** A medida que se juega el
+  Mundial, introducir los marcadores reales y que el sistema **devuelva el
+  rendimiento del modelo**: aciertos del 1X2, log-loss y Brier sobre los partidos
+  ya disputados, y una curva de fiabilidad (¿el "60 %" predicho acabó siendo ~60 %?).
+  Sería un script `evaluar_resultados.py` que lee `predicciones_partidos.csv` + los
+  resultados reales y saca un cuadro de mando de cómo de bien predijo el modelo —
+  el cierre natural del proyecto y la prueba definitiva de su calidad.
+- **Modelo bivariante** de goles (Poisson bivariado) que capture la correlación
+  entre equipos de forma general, en vez de Dixon–Coles + calibración por separado.
+- **Bracket oficial** exacto de la FIFA en la simulación (hoy se siembra por
+  rendimiento en grupos como aproximación).
+- **Decaimiento temporal**: ponderar más los partidos recientes al entrenar, para
+  que el modelo refleje mejor el estado actual de cada selección.
+- **Forma reciente y bajas**: incorporar racha de resultados y lesiones/sanciones
+  de última hora.
+- **Calibración dentro de la simulación** Monte Carlo (hoy usa las intensidades de
+  gol crudas; la calibración solo afecta al predictor de partidos).
 
 ---
 

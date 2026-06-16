@@ -51,23 +51,31 @@ cap = pd.to_numeric(state["caps_avg"],       errors="coerce").to_numpy(dtype=flo
 age = pd.to_numeric(state["avg_age"],        errors="coerce").to_numpy(dtype=float)
 
 # ----------------------------------------------------------------------
-# 2. Matriz de goles esperados L[i][j] = goles de i contra j (neutral)
+# 2. Matrices de goles esperados:
+#    L[i][j]      = goles de i contra j en campo neutral
+#    L_HOME[i][j] = goles de i contra j jugando i como local
 # ----------------------------------------------------------------------
-rows = []
-for i in range(n):
-    for j in range(n):
-        rows.append({
-            "elo_diff":   elo[i] - elo[j],
-            "is_home":    0,                      # todo campo neutral
-            "log_mv":     np.log1p(mv[i]),
-            "log_mv_opp": np.log1p(mv[j]),
-            "caps":       cap[i],
-            "caps_opp":   cap[j],
-            "age":        age[i],
-            "age_opp":    age[j],
-        })
-L = model.predict(pd.DataFrame(rows)[FEATURES]).reshape(n, n)
-L = np.clip(L, 0.05, 6.0)   # acotar lambdas a un rango razonable
+ANFITRIONES = {"Mexico", "United States", "Canada"}   # sedes del Mundial 2026
+ES_ANFITRION = np.array([teams[i] in ANFITRIONES for i in range(n)])
+
+def matriz_lambdas(is_home):
+    rows = []
+    for i in range(n):
+        for j in range(n):
+            rows.append({
+                "elo_diff":   elo[i] - elo[j],
+                "is_home":    is_home,
+                "log_mv":     np.log1p(mv[i]),
+                "log_mv_opp": np.log1p(mv[j]),
+                "caps":       cap[i],
+                "caps_opp":   cap[j],
+                "age":        age[i],
+                "age_opp":    age[j],
+            })
+    return np.clip(model.predict(pd.DataFrame(rows)[FEATURES]).reshape(n, n), 0.05, 6.0)
+
+L      = matriz_lambdas(0)   # campo neutral
+L_HOME = matriz_lambdas(1)   # equipo de la fila, como local
 
 # ----------------------------------------------------------------------
 # 3. Cuadro de grupos (genera un sorteo sembrado por Elo si no existe)
@@ -100,9 +108,11 @@ for g, sub in groups_df.groupby("group"):
 # ----------------------------------------------------------------------
 # 4. Utilidades de simulacion
 # ----------------------------------------------------------------------
-def jugar(i, j):
-    """Devuelve (goles_i, goles_j) muestreando dos Poisson independientes."""
-    return RNG.poisson(L[i, j]), RNG.poisson(L[j, i])
+def jugar(i, j, local=None):
+    """local: 'i' / 'j' / None (neutral). Devuelve (goles_i, goles_j)."""
+    li = L_HOME[i, j] if local == "i" else L[i, j]
+    lj = L_HOME[j, i] if local == "j" else L[j, i]
+    return RNG.poisson(li), RNG.poisson(lj)
 
 def penaltis(i, j):
     """Desempate por penaltis ponderado por Elo. Devuelve el ganador."""
@@ -140,7 +150,11 @@ def simular_torneo():
         for a in range(4):
             for b in range(a + 1, 4):
                 i, j = eqs[a], eqs[b]
-                gi, gj = jugar(i, j)
+                # ventaja de local del anfitrion en su fase de grupos
+                if ES_ANFITRION[i] and not ES_ANFITRION[j]:   local = "i"
+                elif ES_ANFITRION[j] and not ES_ANFITRION[i]: local = "j"
+                else:                                         local = None
+                gi, gj = jugar(i, j, local)
                 gf[i] += gi; ga[i] += gj
                 gf[j] += gj; ga[j] += gi
                 if gi > gj:   pts[i] += 3

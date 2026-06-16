@@ -34,14 +34,18 @@ OUT_PATH     = "datos/master/predicciones_partidos.csv"
 MAX_GOLES = 10
 CLIP_LO, CLIP_HI = 0.05, 6.0
 FASES_KO = {"eliminatoria", "ko", "knockout", "elim"}
+ANFITRIONES = {"Mexico", "United States", "Canada"}   # sedes del Mundial 2026
+NEUTRAL_TOKENS = {"", "neutral", "no", "none", "-"}
 
 # ----------------------------------------------------------------------
 # Carga de modelo y estado de equipos
 # ----------------------------------------------------------------------
 with open(MODEL_PATH, "rb") as f:
     bundle = pickle.load(f)
-model    = bundle["model"]
-FEATURES = bundle["features"]
+model      = bundle["model"]
+FEATURES   = bundle["features"]
+CALIBRATOR = bundle.get("calibrator")   # Platt multiclase (puede faltar en pkl viejos)
+RHO        = bundle.get("rho", 0.0)     # parametro Dixon-Coles
 
 state = pd.read_csv(STATE_PATH)
 ST = {}
@@ -103,36 +107,74 @@ def resolver(nombre: str) -> str:
 # ----------------------------------------------------------------------
 # Modelo de goles -> lambdas -> matriz de marcadores
 # ----------------------------------------------------------------------
-def construir_features(home: str, away: str, neutral: bool = True):
+def construir_features(home: str, away: str, local=None):
+    """local = equipo con ventaja de campo (o None si neutral)."""
     h, a = ST[home], ST[away]
     fila_h = {
         "elo_diff": h["elo"] - a["elo"],
-        "is_home": 0 if neutral else 1,
+        "is_home": 1 if local == home else 0,
         "log_mv": np.log1p(h["mv"]), "log_mv_opp": np.log1p(a["mv"]),
         "caps": h["caps"], "caps_opp": a["caps"],
         "age": h["age"], "age_opp": a["age"],
     }
     fila_a = {
         "elo_diff": a["elo"] - h["elo"],
-        "is_home": 0,                       # el visitante nunca tiene ventaja de campo
+        "is_home": 1 if local == away else 0,
         "log_mv": np.log1p(a["mv"]), "log_mv_opp": np.log1p(h["mv"]),
         "caps": a["caps"], "caps_opp": h["caps"],
         "age": a["age"], "age_opp": h["age"],
     }
     return pd.DataFrame([fila_h, fila_a])[FEATURES]
 
-def predecir_lambdas(home: str, away: str, neutral: bool = True):
-    pred = model.predict(construir_features(home, away, neutral))
+def predecir_lambdas(home: str, away: str, local=None):
+    pred = model.predict(construir_features(home, away, local))
     lh, la = float(pred[0]), float(pred[1])
     return float(np.clip(lh, CLIP_LO, CLIP_HI)), float(np.clip(la, CLIP_LO, CLIP_HI))
+
+def auto_local(home: str, away: str):
+    """Si solo uno de los dos es anfitrion, le da ventaja de campo."""
+    anfitriones = {home, away} & ANFITRIONES
+    return next(iter(anfitriones)) if len(anfitriones) == 1 else None
+
+def determinar_local(home: str, away: str, valor):
+    """Decide quien tiene ventaja de campo a partir de la columna 'local':
+       - vacia o ausente -> automatico (anfitrion del Mundial 2026).
+       - 'neutral'/'no'   -> fuerza campo neutral.
+       - un equipo        -> ese equipo es local.
+    """
+    s = None if valor is None else str(valor).strip().lower()
+    if s in (None, ""):
+        return auto_local(home, away)
+    if s in NEUTRAL_TOKENS:
+        return None
+    try:
+        loc = resolver(valor)
+        if loc in (home, away):
+            return loc
+        print(f"    (aviso: 'local={valor}' no juega este partido; se trata como neutral)")
+    except ValueError:
+        print(f"    (aviso: 'local={valor}' no reconocido; se trata como neutral)")
+    return None
 
 def poisson_pmf(lmbda, k):
     return exp(-lmbda) * lmbda**k / factorial(k)
 
-def matriz_marcadores(lh, la, maxg=MAX_GOLES):
+def tau_dc(x, y, lh, la, rho):
+    """Factor de correccion de Dixon-Coles para los 4 marcadores bajos."""
+    if x == 0 and y == 0: return 1.0 - lh * la * rho
+    if x == 0 and y == 1: return 1.0 + lh * rho
+    if x == 1 and y == 0: return 1.0 + la * rho
+    if x == 1 and y == 1: return 1.0 - rho
+    return 1.0
+
+def matriz_marcadores(lh, la, maxg=MAX_GOLES, rho=RHO):
     ph = np.array([poisson_pmf(lh, k) for k in range(maxg + 1)])
     pa = np.array([poisson_pmf(la, k) for k in range(maxg + 1)])
     m = np.outer(ph, pa)
+    if rho != 0.0:
+        for x in (0, 1):
+            for y in (0, 1):
+                m[x, y] *= tau_dc(x, y, lh, la, rho)
     return m / m.sum()
 
 def probs_1x2(m):
@@ -140,6 +182,14 @@ def probs_1x2(m):
     p_draw = np.trace(m)
     p_away = np.triu(m, 1).sum()
     return p_home, p_draw, p_away
+
+def calibrar(ph, pd_, pa):
+    """Aplica el calibrador de Platt al 1X2 crudo. Sin calibrador, lo deja igual."""
+    if CALIBRATOR is None:
+        return ph, pd_, pa
+    P = np.array([[ph, pd_, pa]])
+    c = CALIBRATOR.predict_proba(np.log(np.clip(P, 1e-6, 1.0)))[0]
+    return float(c[0]), float(c[1]), float(c[2])
 
 def top_marcadores(m, n=5):
     idx = np.dstack(np.unravel_index(np.argsort(m.ravel())[::-1], m.shape))[0]
@@ -151,11 +201,10 @@ def top_marcadores(m, n=5):
 def p_penaltis_home(home, away):
     return 1.0 / (1.0 + 10 ** ((ST[away]["elo"] - ST[home]["elo"]) / 400.0))
 
-def resolver_eliminatoria(home, away, lh, la):
-    ph, pdraw, pa = probs_1x2(matriz_marcadores(lh, la))
+def resolver_eliminatoria(home, away, lh, la, reg_probs):
+    ph, pdraw, pa = reg_probs                      # 1X2 reglamentario ya calibrado
     # prorroga: 30 min ~ 1/3 del partido
-    me = matriz_marcadores(lh / 3.0, la / 3.0)
-    eh, ed, ea = probs_1x2(me)
+    eh, ed, ea = probs_1x2(matriz_marcadores(lh / 3.0, la / 3.0))
     p_pen = p_penaltis_home(home, away)
     p_home_pasa = ph + pdraw * (eh + ed * p_pen)
     return p_home_pasa, 1.0 - p_home_pasa
@@ -185,13 +234,15 @@ def main():
 
         fase = (p.get("fase") or "grupo").strip().lower()
         es_ko = fase in FASES_KO
+        local = determinar_local(home, away, p.get("local"))
 
-        lh, la = predecir_lambdas(home, away)
+        lh, la = predecir_lambdas(home, away, local)
         m = matriz_marcadores(lh, la)
-        ph, pdraw, pa = probs_1x2(m)
+        ph, pdraw, pa = calibrar(*probs_1x2(m))      # 1X2 calibrado
         tops = top_marcadores(m, 5)
 
-        print(f"\n  {home}  vs  {away}   [{'eliminatoria' if es_ko else 'grupo'}]")
+        sede = f"local: {local}" if local else "neutral"
+        print(f"\n  {home}  vs  {away}   [{'eliminatoria' if es_ko else 'grupo'} · {sede}]")
         print(f"    1X2:  {home} {ph*100:5.1f}%  |  Empate {pdraw*100:5.1f}%  |  {away} {pa*100:5.1f}%")
         print(f"    Goles esperados:  {lh:.2f} - {la:.2f}")
         marc = "  ".join(f"{i}-{j} ({pr*100:.1f}%)" for (i, j), pr in tops)
@@ -199,6 +250,7 @@ def main():
 
         fila = {
             "home_team": home, "away_team": away, "fase": fase,
+            "local": local or "neutral",
             "lambda_home": round(lh, 3), "lambda_away": round(la, 3),
             "p_home": round(ph, 4), "p_draw": round(pdraw, 4), "p_away": round(pa, 4),
             "marcador_top1": f"{tops[0][0][0]}-{tops[0][0][1]}",
@@ -206,7 +258,7 @@ def main():
         }
 
         if es_ko:
-            ph_pasa, pa_pasa = resolver_eliminatoria(home, away, lh, la)
+            ph_pasa, pa_pasa = resolver_eliminatoria(home, away, lh, la, (ph, pdraw, pa))
             print(f"    Eliminatoria:  {home} pasa {ph_pasa*100:5.1f}%  |  {away} pasa {pa_pasa*100:5.1f}%")
             fila["p_pasa_home"] = round(ph_pasa, 4)
             fila["p_pasa_away"] = round(pa_pasa, 4)
@@ -214,7 +266,8 @@ def main():
         salida.append(fila)
 
     if salida:
-        campos = ["home_team", "away_team", "fase", "lambda_home", "lambda_away",
+        campos = ["home_team", "away_team", "fase", "local",
+                  "lambda_home", "lambda_away",
                   "p_home", "p_draw", "p_away", "marcador_top1",
                   "p_pasa_home", "p_pasa_away"]
         with open(OUT_PATH, "w", newline="", encoding="utf-8") as f:
