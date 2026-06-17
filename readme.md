@@ -232,6 +232,46 @@ La columna opcional **`local`** controla la ventaja de campo: vacía → automá
 (el anfitrión del Mundial juega en casa); `neutral` → fuerza campo neutral; un
 equipo → ese equipo es local. Salida en `datos/master/predicciones_partidos.csv`.
 
+Ejemplo de salida:
+
+```text
+=== Predicciones (4 partidos) ===
+
+  Portugal  vs  DR Congo   [grupo · neutral]
+    1X2:  Portugal  81.1%  |  Empate  14.1%  |  DR Congo   4.8%
+    Goles esperados:  3.49 - 0.83
+    Marcadores probables:  3-0 (8.5%)  2-0 (8.3%)  4-0 (7.1%)  3-1 (6.4%)  2-1 (6.3%)
+    Por que Portugal:  Elo x1.44  descanso rival x1.21  forma reciente rival x1.19
+    Por que DR Congo:  Elo x0.68  ratio valor x0.86  descanso rival x1.16
+
+  England  vs  Croatia   [grupo · neutral]
+    1X2:  England  69.2%  |  Empate  21.4%  |  Croatia   9.4%
+    Goles esperados:  3.41 - 1.49
+    Marcadores probables:  3-1 (6.1%)  2-1 (6.1%)  4-1 (5.0%)  3-0 (4.8%)  2-0 (4.8%)
+    Por que England:  forma reciente rival x1.25  descanso rival x1.22  Elo x1.20
+    Por que Croatia:  Elo x0.86  descanso rival x1.16  forma reciente rival x1.14
+
+  Ghana  vs  Panama   [grupo · neutral]
+    1X2:  Ghana  26.3%  |  Empate  28.4%  |  Panama  45.3%
+    Goles esperados:  1.04 - 1.84
+    Marcadores probables:  0-1 (10.7%)  1-1 (9.9%)  0-2 (9.1%)  1-2 (8.4%)  0-0 (7.1%)
+    Por que Ghana:  Elo x0.68  descanso rival x1.15  forma reciente rival x1.13
+    Por que Panama:  Elo x1.43  descanso rival x1.22  ratio valor x0.84
+
+  Uzbekistan  vs  Colombia   [grupo · neutral]
+    1X2:  Uzbekistan  15.8%  |  Empate  21.1%  |  Colombia  63.1%
+    Goles esperados:  0.94 - 3.07
+    Marcadores probables:  0-2 (8.5%)  0-3 (7.9%)  1-2 (7.2%)  0-1 (6.8%)  1-3 (6.6%)
+    Por que Uzbekistan:  Elo x0.71  valor plantilla x0.86  descanso rival x1.15
+    Por que Colombia:  Elo x1.42  descanso rival x1.21  forma reciente rival x1.20
+
+OK datos/master/predicciones_partidos.csv  (4 partidos)
+```
+
+La línea `OK datos/master/predicciones_partidos.csv` indica que el archivo de
+salida se escribió correctamente y que el script terminó sin errores, dejando
+el CSV listo para abrirlo o reutilizarlo en el histórico.
+
 Histórico: el script también **anexa** las mismas filas a
 `datos/master/historial_predicciones_partidos.csv` (crea la cabecera si no existe),
 manteniendo un histórico cronológico de las ejecuciones de predicción.
