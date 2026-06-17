@@ -50,6 +50,7 @@ elo = state["elo"].to_numpy(dtype=float)
 mv  = pd.to_numeric(state["squad_mv_total"], errors="coerce").to_numpy(dtype=float)
 cap = pd.to_numeric(state["caps_avg"],       errors="coerce").to_numpy(dtype=float)
 age = pd.to_numeric(state["avg_age"],        errors="coerce").to_numpy(dtype=float)
+fifa = pd.to_numeric(state["fifa_points"],   errors="coerce").fillna(0).to_numpy(dtype=float)
 
 # ----------------------------------------------------------------------
 # 2. Matrices de goles esperados:
@@ -63,15 +64,24 @@ def matriz_lambdas(is_home):
     rows = []
     for i in range(n):
         for j in range(n):
+            elo_diff = elo[i] - elo[j]
+            mv_i = np.log1p(mv[i])
+            mv_j = np.log1p(mv[j])
+            caps_diff = cap[i] - cap[j]
+            fifa_diff = fifa[i] - fifa[j]
             rows.append({
-                "elo_diff":   elo[i] - elo[j],
-                "is_home":    is_home,
-                "log_mv":     np.log1p(mv[i]),
-                "log_mv_opp": np.log1p(mv[j]),
-                "caps":       cap[i],
-                "caps_opp":   cap[j],
-                "age":        age[i],
-                "age_opp":    age[j],
+                "elo_diff":           elo_diff,
+                "elo_diff_squared":   elo_diff ** 2,
+                "is_home":            is_home,
+                "log_mv":             mv_i,
+                "log_mv_opp":         mv_j,
+                "mv_ratio":           mv_i - mv_j,
+                "caps":               cap[i],
+                "caps_opp":           cap[j],
+                "caps_diff_squared":  caps_diff ** 2,
+                "age":                age[i],
+                "age_opp":            age[j],
+                "fifa_points_diff":   fifa_diff,
             })
     return np.clip(model.predict(pd.DataFrame(rows)[FEATURES]).reshape(n, n), 0.05, 6.0)
 
