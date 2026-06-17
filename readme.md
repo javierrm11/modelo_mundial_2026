@@ -41,6 +41,49 @@ Sistema de predicción del Mundial 2026 construido paso a paso, desde la recopil
 - **Columnas:** `date, semester, rank, team, acronym, total.points, previous.points, diff.points`
 - **Integración:** Incorporados en `dataset_final_fifa.csv` como features `home_fifa_rank`, `home_fifa_points`, `away_fifa_rank`, `away_fifa_points`. El modelo usa `fifa_points_diff` (diferencia de puntos FIFA) como predictor activo de goles esperados.
 
+### Dataset final (`dataset_final_fifa.csv`)
+Este es el dataset que alimenta el entrenamiento del modelo. No todas sus
+columnas entran como features: algunas son metadatos para ordenar, unir o
+interpretar los partidos, y otras son el objetivo que el modelo intenta
+predecir.
+
+| Columna | Significado | Uso en el modelo |
+|---|---|---|
+| `date` | Fecha del partido | Metadato temporal. Sirve para ordenar el histórico y aplicar validación temporal. |
+| `home_team` | Equipo local | Metadato de identidad. Necesario para emparejar y trazar cada partido. |
+| `away_team` | Equipo visitante | Metadato de identidad. Necesario para emparejar y trazar cada partido. |
+| `home_score` | Goles del local | Objetivo histórico. Se usa para entrenar y evaluar el modelo de goles. |
+| `away_score` | Goles del visitante | Objetivo histórico. Se usa para entrenar y evaluar el modelo de goles. |
+| `tournament` | Tipo de partido (Mundial, eliminatoria, amistoso...) | Contexto. Permite interpretar el partido y se usa indirectamente en la construcción del Elo. |
+| `neutral` | Indica si el partido fue en campo neutral | Contexto. Ayuda a distinguir ventaja de local y partidos sin anfitrión. |
+| `resultado` | Resultado 1X2 del partido | Etiqueta auxiliar para análisis y validación. No es feature del modelo de goles. |
+| `elo_home_pre` | Elo del local antes del partido | Feature. Resume la fuerza competitiva reciente del local. |
+| `elo_away_pre` | Elo del visitante antes del partido | Feature. Resume la fuerza competitiva reciente del visitante. |
+| `elo_diff` | Diferencia de Elo prepartido | Feature principal. Captura la ventaja relativa entre equipos. |
+| `home_squad_mv_total` | Valor total de mercado de la plantilla local | Feature. Proxy de calidad base del equipo. |
+| `home_squad_mv_avg` | Valor medio de mercado de la plantilla local | Feature auxiliar. Captura profundidad/calidad media de la convocatoria. |
+| `home_squad_mv_median` | Mediana del valor de mercado local | Feature auxiliar. Reduce el peso de estrellas extremas. |
+| `home_caps_avg` | Media de internacionalidades del local | Feature. Mide experiencia internacional del grupo. |
+| `home_goals_total` | Goles internacionales acumulados del local | Feature auxiliar. Aproxima capacidad ofensiva histórica de la plantilla. |
+| `home_avg_age` | Edad media del local | Feature. Captura madurez o juventud del equipo. |
+| `away_squad_mv_total` | Valor total de mercado de la plantilla visitante | Feature. Proxy de calidad base del visitante. |
+| `away_squad_mv_avg` | Valor medio de mercado de la plantilla visitante | Feature auxiliar. Complementa el valor total con la calidad media. |
+| `away_squad_mv_median` | Mediana del valor de mercado visitante | Feature auxiliar. Hace la señal más robusta a outliers. |
+| `away_caps_avg` | Media de internacionalidades del visitante | Feature. Resume experiencia del visitante. |
+| `away_goals_total` | Goles internacionales acumulados del visitante | Feature auxiliar. Señal adicional de producción ofensiva histórica. |
+| `away_avg_age` | Edad media del visitante | Feature. Captura el perfil físico/táctico del visitante. |
+| `home_fifa_rank` | Ranking FIFA del local | Feature auxiliar. Señal externa de fuerza relativa. |
+| `home_fifa_points` | Puntos FIFA del local | Feature. Es la versión más informativa del ranking FIFA. |
+| `away_fifa_rank` | Ranking FIFA del visitante | Feature auxiliar. Señal externa de fuerza relativa. |
+| `away_fifa_points` | Puntos FIFA del visitante | Feature. Es la versión más informativa del ranking FIFA. |
+
+De todas estas columnas, el modelo final se queda solo con las variables que
+aportan señal predictiva estable y disponibles antes del partido. En concreto,
+usa `elo_diff`, `elo_diff_squared`, `is_home`, `log_mv`, `log_mv_opp`,
+`mv_ratio`, `caps`, `caps_opp`, `caps_diff_squared`, `age`, `age_opp` y
+`fifa_points_diff`. El resto de columnas se conservan para trazabilidad,
+análisis y construcción del dataset.
+
 ### Jugadores — Transfermarkt
 - **Fuente:** Kaggle — *Football Data from Transfermarkt*
 - **Archivos:** `datos/jugadores/transfermarket/players.csv`, `player_valuations.csv`

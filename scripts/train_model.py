@@ -43,7 +43,7 @@ N_FOLDS     = 5              # folds temporales para la calibracion OOF
 CLIP_LO, CLIP_HI = 0.05, 6.0
 RES2IDX = {"H": 0, "D": 1, "A": 2}   # orden de clases en el 1X2
 HALF_LIVES  = [4, 8, 12, 20]  # candidatos de semivida (anios) para el decaimiento
-NB_ALPHA = 0.0                # dispersion global: Var = mu + NB_ALPHA * mu^2
+NB_ALPHA = 2                # dispersion global: Var = mu + NB_ALPHA * mu^2
 
 os.makedirs("modelos", exist_ok=True)
 
