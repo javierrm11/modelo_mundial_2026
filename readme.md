@@ -207,6 +207,7 @@ python scripts/simulate_tournament.py 10000
 # Predicción partido a partido (lee datos/master/fixtures.csv)
 # Genera datos/master/predicciones_partidos.csv y anexa al historial
 python scripts/predict_fixtures.py
+```
 
 ---
 
