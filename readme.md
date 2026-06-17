@@ -194,6 +194,63 @@ La mejor configuración OOF se puede usar para reentrenar definitivamente el
 modelo y el bundle guardado (`modelos/goal_model.pkl`) incluye ahora metadatos:
 `nb_alpha` (si ≠ 0), `score_model` (`negbin` cuando procede) y las `features`.
 
+Ejemplo real de salida al entrenar:
+
+```text
+Partidos entrenamiento: 6,787
+Partidos validacion   : 740
+
+Seleccion de decaimiento temporal (log-loss OOF en el train):
+  sin decaimiento          log-loss OOF = 1.0363
+  half-life = 4 anios      log-loss OOF = 1.0620
+  half-life = 8 anios      log-loss OOF = 1.0418
+  half-life = 12 anios     log-loss OOF = 1.0392
+  half-life = 20 anios     log-loss OOF = 1.0375
+  -> elegido: sin decaimiento
+
+Sobredispersion global NB_ALPHA = 0.1209  (si es > 0, ensancha la cola de marcadores)
+Ajustando calibrador (CV temporal out-of-fold)...
+
+--- Validacion 1X2 sobre el test (>= 2018) ---
+                              Log-loss    Brier  Accuracy     ECE
+Poisson indep. sin decay        1.0157   0.6099     0.497  0.0597
+Poisson indep. con decay        1.0157   0.6099     0.497  0.0597
+NegBin sobre-disperso           1.0137   0.6082     0.497  0.0462
++ calibracion (final)           1.0101   0.6055     0.497  0.0289
+Baseline (uniforme)             1.0986              0.442
+
+Efecto de la sobre-dispersion en los marcadores bajos (medias en el test):
+  0-0:  indep  6.6%  ->  NB  8.2%   (real 10.7%)
+  1-1:  indep 10.5%  ->  NB  9.7%   (real 11.8%)
+  1-0:  indep  9.7%  ->  NB 10.2%   (real 11.6%)
+  0-1:  indep  7.7%  ->  NB  8.2%   (real  6.6%)
+
+Fiabilidad del modelo final (confianza vs acierto real):
+       rango     n  conf_media   acierto
+     0.2-0.4   125       0.374     0.352
+     0.4-0.6   389       0.488     0.458
+     0.6-0.8   215       0.669     0.637
+     0.8-1.0    11       0.829     0.818
+
+OK modelos/goal_model.pkl
+OK datos/master/team_state_2026.csv  (48 selecciones)
+```
+
+Como leer este bloque:
+
+- `Partidos entrenamiento` y `Partidos validacion`: corte temporal del dataset; se entrena con el pasado y se valida con partidos mas recientes.
+- `Seleccion de decaimiento temporal`: compara semividas por log-loss OOF en train; gana la menor perdida (en este ejemplo, sin decaimiento).
+- `NB_ALPHA`: parametro global de sobre-dispersion. Si es mayor que 0, la distribucion de marcadores permite mas varianza que Poisson puro.
+- Tabla de validacion 1X2, `Log-loss`: penaliza probabilidades mal asignadas. Mas bajo es mejor.
+- Tabla de validacion 1X2, `Brier`: error cuadratico medio en probabilidades 1X2. Mas bajo es mejor.
+- Tabla de validacion 1X2, `Accuracy`: porcentaje de aciertos en la clase mas probable. Mas alto es mejor.
+- Tabla de validacion 1X2, `ECE` (Expected Calibration Error): diferencia entre confianza predicha y frecuencia real. Mas bajo es mejor.
+- `Baseline (uniforme)`: referencia naive que asigna 1/3 a H-D-A; sirve para medir ganancia real del modelo.
+- `Efecto de la sobre-dispersion`: compara frecuencias de marcadores bajos entre Poisson independiente y NegBin frente al dato real.
+- `Fiabilidad del modelo final`: por rangos de confianza, muestra si la probabilidad media que predice el modelo coincide con el acierto observado.
+- `OK modelos/goal_model.pkl`: confirma que el modelo entrenado se guardo correctamente.
+- `OK datos/master/team_state_2026.csv`: confirma que se actualizo el estado de las 48 selecciones para prediccion/simulacion.
+
 **Simulación Monte Carlo** (`scripts/simulate_tournament.py`):
 
 - Precalcula la matriz de goles esperados entre las 48 selecciones.
