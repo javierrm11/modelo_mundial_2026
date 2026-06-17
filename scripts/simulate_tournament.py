@@ -39,6 +39,7 @@ with open(MODEL_PATH, "rb") as f:
     bundle = pickle.load(f)
 model    = bundle["model"]
 FEATURES = bundle["features"]
+LAMBDA3  = bundle.get("lambda3", 0.0)   # covarianza del Poisson bivariante
 
 state = pd.read_csv(STATE_PATH)
 teams = state["team"].tolist()
@@ -109,10 +110,13 @@ for g, sub in groups_df.groupby("group"):
 # 4. Utilidades de simulacion
 # ----------------------------------------------------------------------
 def jugar(i, j, local=None):
-    """local: 'i' / 'j' / None (neutral). Devuelve (goles_i, goles_j)."""
+    """local: 'i' / 'j' / None (neutral). Muestrea el Poisson bivariante
+       (X=W1+W3, Y=W2+W3) para capturar la correlacion entre ambos marcadores."""
     li = L_HOME[i, j] if local == "i" else L[i, j]
     lj = L_HOME[j, i] if local == "j" else L[j, i]
-    return RNG.poisson(li), RNG.poisson(lj)
+    l3 = min(LAMBDA3, 0.95 * min(li, lj))   # componente compartido (covarianza)
+    w3 = RNG.poisson(l3)
+    return RNG.poisson(li - l3) + w3, RNG.poisson(lj - l3) + w3
 
 def penaltis(i, j):
     """Desempate por penaltis ponderado por Elo. Devuelve el ganador."""

@@ -22,7 +22,7 @@ import csv
 import pickle
 import unicodedata
 import difflib
-from math import exp, factorial
+from math import exp, factorial, comb
 import numpy as np
 import pandas as pd
 
@@ -44,8 +44,8 @@ with open(MODEL_PATH, "rb") as f:
     bundle = pickle.load(f)
 model      = bundle["model"]
 FEATURES   = bundle["features"]
-CALIBRATOR = bundle.get("calibrator")   # Platt multiclase (puede faltar en pkl viejos)
-RHO        = bundle.get("rho", 0.0)     # parametro Dixon-Coles
+CALIBRATOR = bundle.get("calibrator")     # Platt multiclase (puede faltar en pkl viejos)
+LAMBDA3    = bundle.get("lambda3", 0.0)   # covarianza del Poisson bivariante
 
 state = pd.read_csv(STATE_PATH)
 ST = {}
@@ -131,6 +131,30 @@ def predecir_lambdas(home: str, away: str, local=None):
     lh, la = float(pred[0]), float(pred[1])
     return float(np.clip(lh, CLIP_LO, CLIP_HI)), float(np.clip(la, CLIP_LO, CLIP_HI))
 
+# Nombres legibles de las features para la explicacion SHAP
+NOMBRE_FEAT = {
+    "elo_diff": "Elo", "is_home": "ventaja local",
+    "log_mv": "valor plantilla", "log_mv_opp": "valor rival",
+    "caps": "experiencia", "caps_opp": "experiencia rival",
+    "age": "edad", "age_opp": "edad rival",
+}
+
+def explicar(home: str, away: str, local=None, top=3):
+    """Contribuciones SHAP (pred_contrib de LightGBM) a los goles esperados de
+       cada equipo, como factores multiplicativos (×>1 sube, ×<1 baja)."""
+    X = construir_features(home, away, local)
+    contrib = model.predict(X, pred_contrib=True)   # (2, n_features + 1)
+    i_home = FEATURES.index("is_home")
+    salida = []
+    for fila, equipo in [(0, home), (1, away)]:
+        c = np.asarray(contrib[fila][:-1])          # ultima col = valor base
+        # "ventaja local" solo es relevante si ese equipo juega en casa
+        excl = {i_home} if X.iloc[fila]["is_home"] == 0 else set()
+        orden = [k for k in np.argsort(-np.abs(c)) if k not in excl][:top]
+        partes = [f"{NOMBRE_FEAT[FEATURES[k]]} x{np.exp(c[k]):.2f}" for k in orden]
+        salida.append((equipo, partes))
+    return salida
+
 def auto_local(home: str, away: str):
     """Si solo uno de los dos es anfitrion, le da ventaja de campo."""
     anfitriones = {home, away} & ANFITRIONES
@@ -156,26 +180,23 @@ def determinar_local(home: str, away: str, valor):
         print(f"    (aviso: 'local={valor}' no reconocido; se trata como neutral)")
     return None
 
-def poisson_pmf(lmbda, k):
-    return exp(-lmbda) * lmbda**k / factorial(k)
+FACT = [factorial(k) for k in range(MAX_GOLES + 1)]
 
-def tau_dc(x, y, lh, la, rho):
-    """Factor de correccion de Dixon-Coles para los 4 marcadores bajos."""
-    if x == 0 and y == 0: return 1.0 - lh * la * rho
-    if x == 0 and y == 1: return 1.0 + lh * rho
-    if x == 1 and y == 0: return 1.0 + la * rho
-    if x == 1 and y == 1: return 1.0 - rho
-    return 1.0
+def biv_score_proba(x, y, mu_h, mu_a, lam3):
+    """P(X=x, Y=y) del Poisson bivariante (X=W1+W3, Y=W2+W3)."""
+    l3 = min(lam3, 0.95 * min(mu_h, mu_a))
+    l1 = max(mu_h - l3, 1e-9)
+    l2 = max(mu_a - l3, 1e-9)
+    s = 0.0
+    for k in range(min(x, y) + 1):
+        s += (comb(x, k) * comb(y, k) * FACT[k]) * (l3 / (l1 * l2))**k
+    return exp(-(l1 + l2 + l3)) * l1**x / FACT[x] * l2**y / FACT[y] * s
 
-def matriz_marcadores(lh, la, maxg=MAX_GOLES, rho=RHO):
-    ph = np.array([poisson_pmf(lh, k) for k in range(maxg + 1)])
-    pa = np.array([poisson_pmf(la, k) for k in range(maxg + 1)])
-    m = np.outer(ph, pa)
-    if rho != 0.0:
-        for x in (0, 1):
-            for y in (0, 1):
-                m[x, y] *= tau_dc(x, y, lh, la, rho)
-    return m / m.sum()
+def matriz_marcadores(lh, la, maxg=MAX_GOLES, lam3=LAMBDA3):
+    """Matriz de marcadores del Poisson bivariante (filas=local, cols=visitante)."""
+    M = np.array([[biv_score_proba(x, y, lh, la, lam3) for y in range(maxg + 1)]
+                  for x in range(maxg + 1)])
+    return M / M.sum()
 
 def probs_1x2(m):
     p_home = np.tril(m, -1).sum()
@@ -218,7 +239,7 @@ def main():
         print(f"No existe el fichero de fixtures: {fix_path}")
         sys.exit(1)
 
-    with open(fix_path, encoding="utf-8") as f:
+    with open(fix_path, encoding="utf-8-sig") as f:   # utf-8-sig tolera el BOM de Excel/Windows
         partidos = list(csv.DictReader(f))
 
     salida = []
@@ -247,6 +268,8 @@ def main():
         print(f"    Goles esperados:  {lh:.2f} - {la:.2f}")
         marc = "  ".join(f"{i}-{j} ({pr*100:.1f}%)" for (i, j), pr in tops)
         print(f"    Marcadores probables:  {marc}")
+        for equipo, partes in explicar(home, away, local):
+            print(f"    Por que {equipo}:  " + "  ".join(partes))
 
         fila = {
             "home_team": home, "away_team": away, "fase": fase,

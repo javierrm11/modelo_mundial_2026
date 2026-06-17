@@ -97,27 +97,37 @@ Cobertura típica: 19–26 de los 26 jugadores por selección.
 - Formato largo: cada partido → 2 filas (perspectiva de cada equipo que marca).
 - `LightGBM` con objetivo `poisson` predice los goles esperados (λ) de un equipo
   contra otro a partir de `elo_diff`, ventaja de campo y features de plantilla.
-- **Corrección Dixon–Coles** (ρ por máxima verosimilitud): reajusta los marcadores
-  bajos (0-0, 1-0, 0-1, 1-1) para corregir la correlación entre goles.
+- **Decaimiento temporal**: cada partido pesa `0.5^(años/semivida)`, así los
+  recientes influyen más. La semivida (**8 años**) se elige por CV temporal
+  *out-of-fold* sobre el train, sin tocar el test.
+- **Poisson bivariante** (Karlis & Ntzoufras): un término de covarianza
+  `λ₃` (estimado por máxima verosimilitud, **λ₃ ≈ 0,13**) modela la correlación
+  entre los goles de ambos equipos de forma general — sustituye al parche de
+  Dixon–Coles. Lleva la probabilidad de 0-0 de 8,7 % a **9,9 %** (real 9,7 %).
 - **Calibración probabilística** (Platt multiclase con CV temporal *out-of-fold*):
-  ajusta el 1X2 final. Dixon–Coles y calibración se **componen**.
+  pulido final del 1X2. Decaimiento, bivariante y calibración se **componen**.
+- **Explicabilidad (SHAP)**: el predictor muestra *por qué* da cada pronóstico,
+  vía las contribuciones nativas de LightGBM (`pred_contrib`).
 - Validación **temporal** (entrena < 2018, valida ≥ 2018, incluye Mundiales
-  2018 y 2022). Métricas sobre el 1X2 derivado de los dos λ:
+  2018 y 2022). Cada capa mejora las métricas sobre el 1X2 derivado de los dos λ:
 
-  | | Poisson indep. | + Dixon–Coles | + DC + calib. | Baseline |
+  | Capa (acumulativa) | Log-loss | Brier | ECE | Accuracy |
   |---|---|---|---|---|
-  | Log-loss | 1.003 | 1.002 | **0.999** | 1.10 (uniforme) |
-  | Brier | 0.601 | 0.600 | **0.598** | — |
-  | ECE | 0.048 | 0.042 | **0.024** | — |
-  | Accuracy | 51.0 % | 50.9 % | 50.4 % | 44.8 % (mayoritaria) |
+  | Poisson independiente | 1.003 | 0.601 | 0.048 | 51.0 % |
+  | + decaimiento temporal | 0.998 | 0.597 | 0.039 | 50.7 % |
+  | + Poisson bivariante | 0.998 | 0.598 | 0.036 | 50.5 % |
+  | **+ calibración (final)** | **0.995** | **0.595** | **0.023** | 51.0 % |
+  | Baseline uniforme | 1.099 | — | — | 44.8 % |
 
 **Simulación Monte Carlo** (`scripts/simulate_tournament.py`):
 
 - Precalcula la matriz de goles esperados entre las 48 selecciones.
 - Simula el torneo completo (12 grupos de 4 → 1º, 2º y 8 mejores terceros →
-  dieciseisavos → final) **10.000 veces** muestreando marcadores con Poisson y
+  dieciseisavos → final) **10.000 veces** muestreando marcadores con el **Poisson
+  bivariante** (las correcciones del modelo entran también en la simulación) y
   resolviendo empates de eliminatoria por penaltis ponderados por Elo.
 - Salida: `predicciones_mundial2026.csv` con % de campeón, final, semis, etc.
+  Favoritas actuales: **Argentina 15 %, España 15 %, Francia 14 %**.
 
 > El cuadro de grupos se lee de `datos/master/groups_2026.csv`. Si no existe se
 > genera un **sorteo sembrado por Elo** (4 bombos) — reemplázalo por el sorteo
@@ -137,10 +147,11 @@ Mexico,Croatia,grupo,
 Mexico,United States,eliminatoria,neutral
 ```
 
-Por cada partido da el **1X2**, los **goles esperados (λ)** de cada equipo y los
-**5 marcadores más probables**. En las filas marcadas `eliminatoria` resuelve el
-empate con prórroga (λ·⅓) + penaltis ponderados por Elo y da el **P(pasa de
-ronda)** de cada equipo. Acepta alias en español (`España`, `Países Bajos`…).
+Por cada partido da el **1X2**, los **goles esperados (λ)** de cada equipo, los
+**5 marcadores más probables** y una explicación **SHAP** de *por qué* (cuánto
+pesan el Elo, el valor de plantilla, la ventaja de local…). En las filas marcadas
+`eliminatoria` resuelve el empate con prórroga (λ·⅓) + penaltis ponderados por Elo
+y da el **P(pasa de ronda)**. Acepta alias en español (`España`, `Países Bajos`…).
 
 La columna opcional **`local`** controla la ventaja de campo: vacía → automática
 (el anfitrión del Mundial juega en casa); `neutral` → fuerza campo neutral; un
@@ -219,16 +230,19 @@ Ideas para seguir desarrollando el proyecto, de mayor a menor impacto:
   Sería un script `evaluar_resultados.py` que lee `predicciones_partidos.csv` + los
   resultados reales y saca un cuadro de mando de cómo de bien predijo el modelo —
   el cierre natural del proyecto y la prueba definitiva de su calidad.
-- **Modelo bivariante** de goles (Poisson bivariado) que capture la correlación
-  entre equipos de forma general, en vez de Dixon–Coles + calibración por separado.
+- **Comparar contra las casas de apuestas.** Enfrentar las probabilidades del
+  modelo a las cuotas reales del mercado para detectar **apuestas de valor** (donde
+  el modelo ve más probabilidad que la cuota implícita) y medir rentabilidad simulada.
 - **Bracket oficial** exacto de la FIFA en la simulación (hoy se siembra por
   rendimiento en grupos como aproximación).
-- **Decaimiento temporal**: ponderar más los partidos recientes al entrenar, para
-  que el modelo refleje mejor el estado actual de cada selección.
-- **Forma reciente y bajas**: incorporar racha de resultados y lesiones/sanciones
-  de última hora.
-- **Calibración dentro de la simulación** Monte Carlo (hoy usa las intensidades de
-  gol crudas; la calibración solo afecta al predictor de partidos).
+- **Más features contextuales**: días de descanso entre partidos, distancia de
+  viaje, altitud (Ciudad de México), clima.
+- **Forma reciente y bajas**: racha de resultados de los últimos meses y
+  lesiones/sanciones de última hora.
+- **Intervalos de incertidumbre** en las probabilidades de campeón (error de
+  Monte Carlo / bandas de confianza), no solo el porcentaje puntual.
+- **Pipeline automatizado**: refrescar Elo y convocatorias vía API de forma
+  programada para mantener el modelo siempre al día durante el torneo.
 
 ---
 
