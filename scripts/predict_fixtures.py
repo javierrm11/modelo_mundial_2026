@@ -58,6 +58,8 @@ for _, r in state.iterrows():
         "mv":  float(r["squad_mv_total"]) if pd.notna(r["squad_mv_total"]) else np.nan,
         "caps": float(r["caps_avg"])      if pd.notna(r["caps_avg"])       else np.nan,
         "age": float(r["avg_age"])        if pd.notna(r["avg_age"])        else np.nan,
+        "days_rest": float(r.get("days_since_last_match", 0)) if pd.notna(r.get("days_since_last_match", 0)) else 0.0,
+        "recent_form_5": float(r.get("recent_form_5", 0)) if pd.notna(r.get("recent_form_5", 0)) else 0.0,
         "fifa_points": float(r.get("fifa_points", 0)) if pd.notna(r.get("fifa_points", 0)) else 0.0,
     }
 CANONICOS = list(ST.keys())
@@ -140,6 +142,10 @@ def construir_features(home: str, away: str, local=None):
         "age": h["age"], 
         "age_opp": a["age"],
         "fifa_points_diff": h.get("fifa_points", 0) - a.get("fifa_points", 0),
+        "days_rest": h.get("days_rest", 0),
+        "days_rest_opp": a.get("days_rest", 0),
+        "recent_form_5": h.get("recent_form_5", 0),
+        "recent_form_5_opp": a.get("recent_form_5", 0),
     }
     fila_a = {
         "elo_diff": elo_diff_a,
@@ -154,6 +160,10 @@ def construir_features(home: str, away: str, local=None):
         "age": a["age"], 
         "age_opp": h["age"],
         "fifa_points_diff": a.get("fifa_points", 0) - h.get("fifa_points", 0),
+        "days_rest": a.get("days_rest", 0),
+        "days_rest_opp": h.get("days_rest", 0),
+        "recent_form_5": a.get("recent_form_5", 0),
+        "recent_form_5_opp": h.get("recent_form_5", 0),
     }
     return pd.DataFrame([fila_h, fila_a])[FEATURES]
 
@@ -170,6 +180,8 @@ NOMBRE_FEAT = {
     "caps": "experiencia", "caps_opp": "experiencia rival", "caps_diff_squared": "exp²",
     "age": "edad", "age_opp": "edad rival",
     "fifa_points_diff": "ranking FIFA",
+    "days_rest": "descanso", "days_rest_opp": "descanso rival",
+    "recent_form_5": "forma reciente", "recent_form_5_opp": "forma reciente rival",
 }
 
 def explicar(home: str, away: str, local=None, top=3):

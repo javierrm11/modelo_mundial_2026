@@ -46,11 +46,19 @@ teams = state["team"].tolist()
 n = len(teams)
 idx = {t: i for i, t in enumerate(teams)}
 
-elo = state["elo"].to_numpy(dtype=float)
-mv  = pd.to_numeric(state["squad_mv_total"], errors="coerce").to_numpy(dtype=float)
-cap = pd.to_numeric(state["caps_avg"],       errors="coerce").to_numpy(dtype=float)
-age = pd.to_numeric(state["avg_age"],        errors="coerce").to_numpy(dtype=float)
-fifa = pd.to_numeric(state["fifa_points"],   errors="coerce").fillna(0).to_numpy(dtype=float)
+
+def state_col(name, default=0.0):
+    if name in state.columns:
+        return pd.to_numeric(state[name], errors="coerce").fillna(default).to_numpy(dtype=float)
+    return np.full(n, default, dtype=float)
+
+elo = state_col("elo")
+mv  = state_col("squad_mv_total")
+cap = state_col("caps_avg")
+age = state_col("avg_age")
+fifa = state_col("fifa_points")
+days_rest = state_col("days_since_last_match")
+recent_form = state_col("recent_form_5")
 
 # ----------------------------------------------------------------------
 # 2. Matrices de goles esperados:
@@ -82,6 +90,10 @@ def matriz_lambdas(is_home):
                 "age":                age[i],
                 "age_opp":            age[j],
                 "fifa_points_diff":   fifa_diff,
+                "days_rest":          days_rest[i],
+                "days_rest_opp":      days_rest[j],
+                "recent_form_5":      recent_form[i],
+                "recent_form_5_opp":  recent_form[j],
             })
     return np.clip(model.predict(pd.DataFrame(rows)[FEATURES]).reshape(n, n), 0.05, 6.0)
 

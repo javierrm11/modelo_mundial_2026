@@ -60,6 +60,10 @@ predecir.
 | `elo_home_pre` | Elo del local antes del partido | Feature. Resume la fuerza competitiva reciente del local. |
 | `elo_away_pre` | Elo del visitante antes del partido | Feature. Resume la fuerza competitiva reciente del visitante. |
 | `elo_diff` | Diferencia de Elo prepartido | Feature principal. Captura la ventaja relativa entre equipos. |
+| `home_days_rest` | Días desde el último partido del local | Feature. Captura fatiga y carga competitiva reciente. |
+| `away_days_rest` | Días desde el último partido del visitante | Feature. Captura fatiga y carga competitiva reciente. |
+| `home_recent_form_5` | Media de puntos del local en sus últimos 5 partidos | Feature. Resume forma reciente sin depender de un solo resultado. |
+| `away_recent_form_5` | Media de puntos del visitante en sus últimos 5 partidos | Feature. Resume forma reciente sin depender de un solo resultado. |
 | `home_squad_mv_total` | Valor total de mercado de la plantilla local | Feature. Proxy de calidad base del equipo. |
 | `home_squad_mv_avg` | Valor medio de mercado de la plantilla local | Feature auxiliar. Captura profundidad/calidad media de la convocatoria. |
 | `home_squad_mv_median` | Mediana del valor de mercado local | Feature auxiliar. Reduce el peso de estrellas extremas. |
@@ -80,8 +84,9 @@ predecir.
 De todas estas columnas, el modelo final se queda solo con las variables que
 aportan señal predictiva estable y disponibles antes del partido. En concreto,
 usa `elo_diff`, `elo_diff_squared`, `is_home`, `log_mv`, `log_mv_opp`,
-`mv_ratio`, `caps`, `caps_opp`, `caps_diff_squared`, `age`, `age_opp` y
-`fifa_points_diff`. El resto de columnas se conservan para trazabilidad,
+`mv_ratio`, `caps`, `caps_opp`, `caps_diff_squared`, `age`, `age_opp`,
+`fifa_points_diff`, `days_rest`, `days_rest_opp`, `recent_form_5` y
+`recent_form_5_opp`. El resto de columnas se conservan para trazabilidad,
 análisis y construcción del dataset.
 
 ### Jugadores — Transfermarkt
@@ -160,6 +165,7 @@ quede demasiado "estrecho".
   - **Edad media**: `age`, `age_opp`
   - **Ventaja de local**: `is_home`
   - **Rankings FIFA**: `fifa_points_diff` (diferencia de puntos FIFA)
+  - **Fatiga y forma reciente**: `days_rest`, `days_rest_opp`, `recent_form_5`, `recent_form_5_opp`
 - **Decaimiento temporal**: cada partido pesa `0.5^(años/semivida)`; la semivida
   se elige por CV temporal *out-of-fold* (ej. 8 años en la configuración actual).
 - **Sobre-dispersión (NegBin)** opcional: se estima una `nb_alpha` global por

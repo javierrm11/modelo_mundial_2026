@@ -68,6 +68,8 @@ FEATURES = [
     "caps", "caps_opp", "caps_diff_squared",
     "age", "age_opp",
     "fifa_points_diff",
+    "days_rest", "days_rest_opp",
+    "recent_form_5", "recent_form_5_opp",
 ]
 
 def lado(d, scorer):
@@ -108,6 +110,12 @@ def lado(d, scorer):
     scorer_fifa = pd.to_numeric(d.get(f"{scorer}_fifa_points", 0), errors="coerce").fillna(0)
     opp_fifa = pd.to_numeric(d.get(f"{opp}_fifa_points", 0), errors="coerce").fillna(0)
     out["fifa_points_diff"] = scorer_fifa - opp_fifa
+
+    # Fatigue / momentum features
+    out["days_rest"] = pd.to_numeric(d.get(f"{scorer}_days_rest", 0), errors="coerce").fillna(0)
+    out["days_rest_opp"] = pd.to_numeric(d.get(f"{opp}_days_rest", 0), errors="coerce").fillna(0)
+    out["recent_form_5"] = pd.to_numeric(d.get(f"{scorer}_recent_form_5", 0), errors="coerce").fillna(0)
+    out["recent_form_5_opp"] = pd.to_numeric(d.get(f"{opp}_recent_form_5", 0), errors="coerce").fillna(0)
     
     return out
 

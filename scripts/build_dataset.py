@@ -3,17 +3,23 @@ Paso 7 — Dataset final.
 Una fila por partido entre equipos del Mundial 2026.
 
 Columnas:
-  date, home_team, away_team, home_score, away_score, tournament, neutral
-  resultado          : H / D / A
-  elo_home_pre       : Elo local antes del partido
-  elo_away_pre       : Elo visitante antes del partido
-  elo_diff           : elo_home_pre - elo_away_pre
-  home_<feat>        : features de plantilla del local (squad_features.csv)
-  away_<feat>        : features de plantilla del visitante
+    date, home_team, away_team, home_score, away_score, tournament, neutral
+    resultado              : H / D / A
+    elo_home_pre           : Elo local antes del partido
+    elo_away_pre           : Elo visitante antes del partido
+    elo_diff               : elo_home_pre - elo_away_pre
+    home_days_rest         : días desde el último partido del local
+    away_days_rest         : días desde el último partido del visitante
+    home_recent_form_5     : media de puntos en los últimos 5 partidos del local
+    away_recent_form_5     : media de puntos en los últimos 5 partidos del visitante
+    home_<feat>            : features de plantilla del local (squad_features.csv)
+    away_<feat>            : features de plantilla del visitante
 """
 
 import csv
 import os
+from collections import defaultdict, deque
+from datetime import datetime
 
 RESULTS_PATH = (
     "datos/historico de partidos/"
@@ -52,7 +58,9 @@ SQ_FEATS = [
 FIELDS = (
     ["date", "home_team", "away_team", "home_score", "away_score",
      "tournament", "neutral", "resultado",
-     "elo_home_pre", "elo_away_pre", "elo_diff"] +
+     "elo_home_pre", "elo_away_pre", "elo_diff",
+     "home_days_rest", "away_days_rest",
+     "home_recent_form_5", "away_recent_form_5"] +
     [f"home_{f}" for f in SQ_FEATS] +
     [f"away_{f}" for f in SQ_FEATS]
 )
@@ -65,6 +73,16 @@ def resultado(hs: int, as_: int) -> str:
 
 
 rows_out, skipped = [], 0
+last_match_date: dict[str, datetime] = {}
+recent_points: dict[str, deque] = defaultdict(lambda: deque(maxlen=5))
+
+
+def puntos(hs: int, as_: int, side: str) -> int:
+    if hs > as_:
+        return 3 if side == "home" else 0
+    if hs < as_:
+        return 3 if side == "away" else 0
+    return 1
 
 with open(RESULTS_PATH, encoding="utf-8") as f:
     for row in csv.DictReader(f):
@@ -88,11 +106,22 @@ with open(RESULTS_PATH, encoding="utf-8") as f:
             skipped += 1
             continue
 
+        try:
+            match_date = datetime.fromisoformat(date)
+        except ValueError:
+            skipped += 1
+            continue
+
         eh = float(elo_row["elo_home_pre"])
         ea = float(elo_row["elo_away_pre"])
 
         sq_h = sq.get(home, {})
         sq_a = sq.get(away, {})
+
+        home_days_rest = (match_date - last_match_date[home]).days if home in last_match_date else 0
+        away_days_rest = (match_date - last_match_date[away]).days if away in last_match_date else 0
+        home_recent_form_5 = round(sum(recent_points[home]) / len(recent_points[home]), 2) if recent_points[home] else 0.0
+        away_recent_form_5 = round(sum(recent_points[away]) / len(recent_points[away]), 2) if recent_points[away] else 0.0
 
         out: dict = {
             "date":        date,
@@ -106,12 +135,21 @@ with open(RESULTS_PATH, encoding="utf-8") as f:
             "elo_home_pre": round(eh, 2),
             "elo_away_pre": round(ea, 2),
             "elo_diff":     round(eh - ea, 2),
+            "home_days_rest": home_days_rest,
+            "away_days_rest": away_days_rest,
+            "home_recent_form_5": home_recent_form_5,
+            "away_recent_form_5": away_recent_form_5,
         }
         for feat in SQ_FEATS:
             out[f"home_{feat}"] = sq_h.get(feat, "")
             out[f"away_{feat}"] = sq_a.get(feat, "")
 
         rows_out.append(out)
+
+        recent_points[home].append(puntos(hs, as_, "home"))
+        recent_points[away].append(puntos(hs, as_, "away"))
+        last_match_date[home] = match_date
+        last_match_date[away] = match_date
 
 with open(OUT_PATH, "w", newline="", encoding="utf-8") as f:
     writer = csv.DictWriter(f, fieldnames=FIELDS)
