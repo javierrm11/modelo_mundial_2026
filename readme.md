@@ -101,6 +101,14 @@ Cobertura típica: 19–26 de los 26 jugadores por selección.
 ### Modelo (paso 8 y 9)
 **Modelo de goles (LightGBM + opciones sobre-dispersas)** (`scripts/train_model.py`):
 
+Se escoge este enfoque porque el problema es de conteo de goles, con muchas
+interacciones no lineales entre variables y bastante ruido entre selecciones.
+`LightGBM` captura bien esas relaciones sin exigir una parametrización manual
+muy rígida, mientras que `Poisson` respeta que los goles sean enteros no
+negativos. Cuando la distribución real tiene más varianza que la Poisson,
+`nb_alpha` permite ensanchar la cola de marcadores y evitar que el modelo se
+quede demasiado "estrecho".
+
 - Formato largo: cada partido → 2 filas (perspectiva de cada equipo que marca).
 - `LightGBM` con objetivo `poisson` predice los goles esperados (λ) a partir de:
   - **Elo dinámico**: `elo_diff`, `elo_diff_squared` (efecto no-lineal)
