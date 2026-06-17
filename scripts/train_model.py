@@ -31,13 +31,13 @@ import random
 from sklearn.linear_model import LogisticRegression
 from scipy.optimize import minimize_scalar
 
-DATASET_PATH = "datos/master/dataset_final.csv"
+DATASET_PATH = "datos/master/dataset_final_fifa.csv"
 ELO_PATH     = "datos/master/elo_por_partido.csv"
 SQUAD_PATH   = "datos/master/squad_features.csv"
 MODEL_PATH   = "modelos/goal_model.pkl"
 STATE_PATH   = "datos/master/team_state_2026.csv"
 
-CORTE_VALID = "2018-01-01"   # partidos >= esta fecha = validacion
+CORTE_VALID = "2020-01-01"   # partidos >= esta fecha = validacion
 MAX_GOLES   = 10             # truncado para la matriz de marcadores
 N_FOLDS     = 5              # folds temporales para la calibracion OOF
 CLIP_LO, CLIP_HI = 0.05, 6.0
@@ -63,10 +63,11 @@ def peso_temporal(dates, half_life):
     return 0.5 ** (anios / half_life)
 
 FEATURES = [
-    "elo_diff", "is_home",
-    "log_mv", "log_mv_opp",
-    "caps", "caps_opp",
+    "elo_diff", "elo_diff_squared", "is_home",
+    "log_mv", "log_mv_opp", "mv_ratio",
+    "caps", "caps_opp", "caps_diff_squared",
     "age", "age_opp",
+    "fifa_points_diff",
 ]
 
 def lado(d, scorer):
@@ -75,15 +76,39 @@ def lado(d, scorer):
     out = pd.DataFrame()
     out["date"]    = d["date"]
     out["goals"]   = d[f"{scorer}_score"]
-    out["elo_diff"] = d[f"elo_{scorer}_pre"] - d[f"elo_{opp}_pre"]
+    
+    # Elo features
+    elo_diff = d[f"elo_{scorer}_pre"] - d[f"elo_{opp}_pre"]
+    out["elo_diff"] = elo_diff
+    out["elo_diff_squared"] = elo_diff ** 2
+    
     es_neutral = d["neutral"].astype(str).str.upper().eq("TRUE")
     out["is_home"] = ((scorer == "home") & ~es_neutral).astype(int)
-    out["log_mv"]     = np.log1p(pd.to_numeric(d[f"{scorer}_squad_mv_total"], errors="coerce"))
-    out["log_mv_opp"] = np.log1p(pd.to_numeric(d[f"{opp}_squad_mv_total"],    errors="coerce"))
-    out["caps"]     = pd.to_numeric(d[f"{scorer}_caps_avg"], errors="coerce")
-    out["caps_opp"] = pd.to_numeric(d[f"{opp}_caps_avg"],    errors="coerce")
-    out["age"]      = pd.to_numeric(d[f"{scorer}_avg_age"],  errors="coerce")
-    out["age_opp"]  = pd.to_numeric(d[f"{opp}_avg_age"],     errors="coerce")
+    
+    # Market value features
+    mv_scorer = np.log1p(pd.to_numeric(d[f"{scorer}_squad_mv_total"], errors="coerce"))
+    mv_opp = np.log1p(pd.to_numeric(d[f"{opp}_squad_mv_total"], errors="coerce"))
+    out["log_mv"] = mv_scorer
+    out["log_mv_opp"] = mv_opp
+    out["mv_ratio"] = mv_scorer - mv_opp  # logarithmic ratio (equivalent to log(mv_scorer / mv_opp))
+    
+    # Experience features
+    caps_scorer = pd.to_numeric(d[f"{scorer}_caps_avg"], errors="coerce")
+    caps_opp = pd.to_numeric(d[f"{opp}_caps_avg"], errors="coerce")
+    caps_diff = caps_scorer - caps_opp
+    out["caps"] = caps_scorer
+    out["caps_opp"] = caps_opp
+    out["caps_diff_squared"] = caps_diff ** 2
+    
+    # Age features
+    out["age"] = pd.to_numeric(d[f"{scorer}_avg_age"], errors="coerce")
+    out["age_opp"] = pd.to_numeric(d[f"{opp}_avg_age"], errors="coerce")
+    
+    # FIFA rankings difference: from scorer's perspective (scorer - opponent)
+    scorer_fifa = pd.to_numeric(d.get(f"{scorer}_fifa_points", 0), errors="coerce").fillna(0)
+    opp_fifa = pd.to_numeric(d.get(f"{opp}_fifa_points", 0), errors="coerce").fillna(0)
+    out["fifa_points_diff"] = scorer_fifa - opp_fifa
+    
     return out
 
 def long_from_wide(wide):

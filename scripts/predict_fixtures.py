@@ -58,6 +58,7 @@ for _, r in state.iterrows():
         "mv":  float(r["squad_mv_total"]) if pd.notna(r["squad_mv_total"]) else np.nan,
         "caps": float(r["caps_avg"])      if pd.notna(r["caps_avg"])       else np.nan,
         "age": float(r["avg_age"])        if pd.notna(r["avg_age"])        else np.nan,
+        "fifa_points": float(r.get("fifa_points", 0)) if pd.notna(r.get("fifa_points", 0)) else 0.0,
     }
 CANONICOS = list(ST.keys())
 
@@ -113,19 +114,46 @@ def resolver(nombre: str) -> str:
 def construir_features(home: str, away: str, local=None):
     """local = equipo con ventaja de campo (o None si neutral)."""
     h, a = ST[home], ST[away]
+    
+    # Elo features
+    elo_diff_h = h["elo"] - a["elo"]
+    elo_diff_a = a["elo"] - h["elo"]
+    
+    # MV ratio
+    mv_ratio_h = np.log1p(h["mv"]) - np.log1p(a["mv"])
+    mv_ratio_a = np.log1p(a["mv"]) - np.log1p(h["mv"])
+    
+    # Caps diff squared
+    caps_diff_h = h["caps"] - a["caps"]
+    caps_diff_a = a["caps"] - h["caps"]
+    
     fila_h = {
-        "elo_diff": h["elo"] - a["elo"],
+        "elo_diff": elo_diff_h,
+        "elo_diff_squared": elo_diff_h ** 2,
         "is_home": 1 if local == home else 0,
-        "log_mv": np.log1p(h["mv"]), "log_mv_opp": np.log1p(a["mv"]),
-        "caps": h["caps"], "caps_opp": a["caps"],
-        "age": h["age"], "age_opp": a["age"],
+        "log_mv": np.log1p(h["mv"]), 
+        "log_mv_opp": np.log1p(a["mv"]),
+        "mv_ratio": mv_ratio_h,
+        "caps": h["caps"], 
+        "caps_opp": a["caps"],
+        "caps_diff_squared": caps_diff_h ** 2,
+        "age": h["age"], 
+        "age_opp": a["age"],
+        "fifa_points_diff": h.get("fifa_points", 0) - a.get("fifa_points", 0),
     }
     fila_a = {
-        "elo_diff": a["elo"] - h["elo"],
+        "elo_diff": elo_diff_a,
+        "elo_diff_squared": elo_diff_a ** 2,
         "is_home": 1 if local == away else 0,
-        "log_mv": np.log1p(a["mv"]), "log_mv_opp": np.log1p(h["mv"]),
-        "caps": a["caps"], "caps_opp": h["caps"],
-        "age": a["age"], "age_opp": h["age"],
+        "log_mv": np.log1p(a["mv"]), 
+        "log_mv_opp": np.log1p(h["mv"]),
+        "mv_ratio": mv_ratio_a,
+        "caps": a["caps"], 
+        "caps_opp": h["caps"],
+        "caps_diff_squared": caps_diff_a ** 2,
+        "age": a["age"], 
+        "age_opp": h["age"],
+        "fifa_points_diff": a.get("fifa_points", 0) - h.get("fifa_points", 0),
     }
     return pd.DataFrame([fila_h, fila_a])[FEATURES]
 
@@ -136,10 +164,12 @@ def predecir_lambdas(home: str, away: str, local=None):
 
 # Nombres legibles de las features para la explicacion SHAP
 NOMBRE_FEAT = {
-    "elo_diff": "Elo", "is_home": "ventaja local",
-    "log_mv": "valor plantilla", "log_mv_opp": "valor rival",
-    "caps": "experiencia", "caps_opp": "experiencia rival",
+    "elo_diff": "Elo", "elo_diff_squared": "Elo²",
+    "is_home": "ventaja local",
+    "log_mv": "valor plantilla", "log_mv_opp": "valor rival", "mv_ratio": "ratio valor",
+    "caps": "experiencia", "caps_opp": "experiencia rival", "caps_diff_squared": "exp²",
     "age": "edad", "age_opp": "edad rival",
+    "fifa_points_diff": "ranking FIFA",
 }
 
 def explicar(home: str, away: str, local=None, top=3):

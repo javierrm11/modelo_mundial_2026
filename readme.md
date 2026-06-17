@@ -12,12 +12,13 @@ Sistema de predicción del Mundial 2026 construido paso a paso, desde la recopil
 |---|---|---|
 | 1. Datos históricos de partidos | ✅ | `results.csv` — 45k partidos desde 1872 (Kaggle) |
 | 2. Convocatorias 2026 | ✅ | 48 selecciones × 26 jugadores vía football-data.org API |
-| 3. Datos de jugadores | ✅ | `players.csv` + `player_valuations.csv` (Transfermarkt, Kaggle) |
-| 4. Tabla maestra de nombres | ✅ | `team_name_master.csv` — 48 equipos, 3 fuentes unificadas |
-| 5. Elo dinámico | ✅ | `elo_por_partido.csv` — 49,400 partidos con Elo pre/post |
-| 6. Features de plantilla | ✅ | `squad_features.csv` — valor de mercado, caps, edad por selección |
-| 7. Dataset final | ✅ | `dataset_final.csv` — 7,527 partidos entre equipos del Mundial |
-| 8. Modelo + simulación | ✅ | Poisson (LightGBM) + Monte Carlo del torneo → `predicciones_mundial2026.csv` |
+| 3. Rankings FIFA | ✅ | `fifa_mens_rank.csv` — ranking histórico FIFA masculino |
+| 4. Datos de jugadores | ✅ | `players.csv` + `player_valuations.csv` (Transfermarkt, Kaggle) |
+| 5. Tabla maestra de nombres | ✅ | `team_name_master.csv` — 48 equipos, 3 fuentes unificadas |
+| 6. Elo dinámico | ✅ | `elo_por_partido.csv` — 49,400 partidos con Elo pre/post |
+| 7. Features de plantilla | ✅ | `squad_features.csv` — valor de mercado, caps, edad por selección |
+| 8. Dataset final + rankings | ✅ | `dataset_final_fifa.csv` — 7,527 partidos con Elo, squad, Elo y rankings FIFA |
+| 9. Modelo + simulación | ✅ | Poisson (LightGBM) + Monte Carlo del torneo → `predicciones_mundial2026.csv` |
 
 ---
 
@@ -33,6 +34,12 @@ Sistema de predicción del Mundial 2026 construido paso a paso, desde la recopil
 - **Script:** `scripts/fetch_convocatoria.py`
 - **Archivo:** `datos/jugadores/convocatoria/convocatoria.csv`
 - **Columnas:** `team_id, team_name, player_id, player_name, position, date_of_birth, nationality, shirt_number`
+
+### Rankings FIFA masculinos
+- **Fuente:** FIFA Men's World Rankings
+- **Archivo:** `datos/historico de partidos/FIFA World Rankings/fifa_mens_rank.csv`
+- **Columnas:** `date, semester, rank, team, acronym, total.points, previous.points, diff.points`
+- **Integración:** Incorporados en `dataset_final_fifa.csv` como features `home_fifa_rank`, `home_fifa_points`, `away_fifa_rank`, `away_fifa_points`. El modelo usa `fifa_points_diff` (diferencia de puntos FIFA) como predictor activo de goles esperados.
 
 ### Jugadores — Transfermarkt
 - **Fuente:** Kaggle — *Football Data from Transfermarkt*
@@ -91,12 +98,17 @@ Cobertura típica: 19–26 de los 26 jugadores por selección.
 > "fuerza base" de la selección, no como feature temporalmente realista. El Elo
 > sí es temporal (pre-partido).
 
-### Modelo (paso 8)
+### Modelo (paso 8 y 9)
 **Modelo de goles (LightGBM + opciones sobre-dispersas)** (`scripts/train_model.py`):
 
 - Formato largo: cada partido → 2 filas (perspectiva de cada equipo que marca).
-- `LightGBM` con objetivo `poisson` predice los goles esperados (λ) de un equipo
-  contra otro a partir de `elo_diff`, ventaja de campo y features de plantilla.
+- `LightGBM` con objetivo `poisson` predice los goles esperados (λ) a partir de:
+  - **Elo dinámico**: `elo_diff`, `elo_diff_squared` (efecto no-lineal)
+  - **Valor de plantilla**: `log_mv`, `log_mv_opp`, `mv_ratio` (ratio logarítmico)
+  - **Experiencia internacional**: `caps`, `caps_opp`, `caps_diff_squared` (efecto no-lineal)
+  - **Edad media**: `age`, `age_opp`
+  - **Ventaja de local**: `is_home`
+  - **Rankings FIFA**: `fifa_points_diff` (diferencia de puntos FIFA)
 - **Decaimiento temporal**: cada partido pesa `0.5^(años/semivida)`; la semivida
   se elige por CV temporal *out-of-fold* (ej. 8 años en la configuración actual).
 - **Sobre-dispersión (NegBin)** opcional: se estima una `nb_alpha` global por
@@ -172,22 +184,29 @@ manteniendo un histórico cronológico de las ejecuciones de predicción.
 ## Cómo ejecutar
 
 ```bash
-# Pipeline completo (pasos 4 → 9)
+# Pipeline completo (pasos 4 → 9, incluye rankings FIFA)
 python scripts/run_pipeline.py
 
-# Buscar hiperparámetros (tuning temporal — recomendable antes de reentrenar)
-python scripts/train_model.py tune
+# O pasos individuales:
 
-# Reentrenar el modelo final (usa los params hallados si quieres aplicarlos)
+# Paso 7b — Integrar rankings FIFA (genera dataset_final_fifa.csv)
+python scripts/merge_fifa_rankings.py
+
+# Paso 7c — Generar estado 2026 con rankings FIFA (para predicciones)
+python scripts/build_team_state_fifa.py
+
+# Paso 8 — Entrenamiento: seleccionar semivida temporal
 python scripts/train_model.py
 
-# Solo re-simular el torneo (con N simulaciones)
+# Paso 8 (opcional) — Tuning de hiperparámetros (20 iteraciones, CV temporal)
+python scripts/train_model.py tune
+
+# Paso 9 — Simulación del torneo (10.000 veces por defecto)
 python scripts/simulate_tournament.py 10000
 
-# Predecir partidos concretos (lee datos/master/fixtures.csv).
-# El script genera datos/master/predicciones_partidos.csv y anexa al historial.
+# Predicción partido a partido (lee datos/master/fixtures.csv)
+# Genera datos/master/predicciones_partidos.csv y anexa al historial
 python scripts/predict_fixtures.py
-```
 
 ---
 
@@ -200,8 +219,10 @@ Modelo Mundial/
 │
 ├── datos/
 │   ├── historico de partidos/
-│   │   └── [International Football Results from 1872 to 2026/
-│   │       └── results.csv       # Partidos 1872-2026
+│   │   ├── [International Football Results from 1872 to 2026/
+│   │   │   └── results.csv       # Partidos 1872-2026
+│   │   └── FIFA World Rankings/
+│   │       └── fifa_mens_rank.csv # Ranking FIFA masculino histórico
 │   ├── jugadores/
 │   │   ├── convocatoria/
 │   │   │   └── convocatoria.csv  # 48 selecciones × 26 jugadores
@@ -212,8 +233,9 @@ Modelo Mundial/
 │       ├── team_name_master.csv  # Correspondencia de nombres (3 fuentes)
 │       ├── elo_por_partido.csv   # Elo pre/post para los 49k partidos
 │       ├── squad_features.csv    # Features de plantilla por selección
-│       ├── dataset_final.csv     # Dataset listo para el modelo
-│       ├── team_state_2026.csv   # Elo actual + plantilla por selección
+│       ├── dataset_final.csv     # Dataset base (7,527 partidos)
+│       ├── dataset_final_fifa.csv # Dataset + rankings FIFA (feature activa)
+│       ├── team_state_2026.csv   # Elo actual + plantilla + FIFA por selección
 │       ├── groups_2026.csv       # Cuadro de grupos (editable)
 │       ├── predicciones_mundial2026.csv  # Salida de la simulación
 │       ├── fixtures.csv          # Partidos a predecir (editable)
@@ -229,7 +251,9 @@ Modelo Mundial/
     ├── build_elo.py              # Paso 5 — Elo dinámico
     ├── build_squad_features.py   # Paso 6 — features de plantilla
     ├── build_dataset.py          # Paso 7 — dataset final
-    ├── train_model.py            # Paso 8 — modelo de goles (Poisson)
+    ├── merge_fifa_rankings.py    # Paso 7b — merge rankings FIFA → dataset_final_fifa.csv
+    ├── build_team_state_fifa.py  # Paso 7c — estado 2026 con rankings FIFA
+    ├── train_model.py            # Paso 8 — modelo de goles (LightGBM Poisson)
     ├── simulate_tournament.py    # Paso 9 — simulación Monte Carlo
     ├── predict_fixtures.py       # Predicción partido a partido
     └── run_pipeline.py           # Ejecuta pasos 4-9 en orden
