@@ -1,5 +1,5 @@
 """
-Paso 8a - Modelo de goles (Poisson) + calibracion probabilistica.
+Paso 8a - Modelo de goles (Poisson / sobre-disperso) + calibracion probabilistica.
 
 Entrena un modelo que predice los goles esperados (lambda) de un equipo
 contra otro, dado Elo y features de plantilla. A partir de dos lambdas
@@ -17,14 +17,17 @@ contra otro, dado Elo y features de plantilla. A partir de dos lambdas
 Salidas:
   modelos/goal_model.pkl           - modelo + calibrador + metadatos
   datos/master/team_state_2026.csv - Elo actual + plantilla por seleccion
+# end of module docstring
 """
 
 import os
 import pickle
 import numpy as np
 import pandas as pd
-from math import exp, factorial, comb, log
+from math import exp, factorial, comb, log, lgamma
+from sklearn.model_selection import ParameterSampler
 import lightgbm as lgb
+import random
 from sklearn.linear_model import LogisticRegression
 from scipy.optimize import minimize_scalar
 
@@ -40,6 +43,7 @@ N_FOLDS     = 5              # folds temporales para la calibracion OOF
 CLIP_LO, CLIP_HI = 0.05, 6.0
 RES2IDX = {"H": 0, "D": 1, "A": 2}   # orden de clases en el 1X2
 HALF_LIVES  = [4, 8, 12, 20]  # candidatos de semivida (anios) para el decaimiento
+NB_ALPHA = 0.0                # dispersion global: Var = mu + NB_ALPHA * mu^2
 
 os.makedirs("modelos", exist_ok=True)
 
@@ -90,8 +94,9 @@ def long_from_wide(wide):
 # ----------------------------------------------------------------------
 # 2. Modelo de goles y derivacion del 1X2
 # ----------------------------------------------------------------------
-def make_model():
-    return lgb.LGBMRegressor(
+def make_model(params=None):
+    """Crea un LGBM con parámetros por defecto que pueden ser sobreescritos por `params`."""
+    defaults = dict(
         objective="poisson",
         n_estimators=350,
         learning_rate=0.03,
@@ -104,9 +109,12 @@ def make_model():
         random_state=42,
         verbose=-1,
     )
+    if params:
+        defaults.update(params)
+    return lgb.LGBMRegressor(**defaults)
 
-def entrenar(wide, half_life=None):
-    m = make_model()
+def entrenar(wide, half_life=None, model_params=None):
+    m = make_model(model_params)
     long = long_from_wide(wide)
     m.fit(long[FEATURES], long["goals"],
           sample_weight=peso_temporal(long["date"], half_life))
@@ -114,6 +122,18 @@ def entrenar(wide, half_life=None):
 
 def poisson_pmf(lmbda, k):
     return exp(-lmbda) * lmbda**k / factorial(k)
+
+def negbin_pmf(k, mu, alpha):
+    """Negative binomial parametrizada por media mu y dispersion alpha."""
+    if alpha <= 0:
+        return poisson_pmf(mu, k)
+    r = 1.0 / alpha
+    log_p = (
+        lgamma(k + r) - lgamma(r) - lgamma(k + 1)
+        + r * log(r / (r + mu))
+        + k * log(mu / (r + mu))
+    )
+    return exp(log_p)
 
 # ----- Poisson bivariante (Karlis & Ntzoufras) -----------------------------
 # X = W1 + W3,  Y = W2 + W3,  con Wk ~ Poisson(lk) independientes.
@@ -132,23 +152,28 @@ def biv_score_proba(x, y, mu_h, mu_a, lam3):
         s += (comb(x, k) * comb(y, k) * FACT[k]) * (l3 / (l1 * l2))**k
     return exp(-(l1 + l2 + l3)) * l1**x / FACT[x] * l2**y / FACT[y] * s
 
-def matriz_marcadores(mu_h, mu_a, lam3=0.0):
-    """Matriz de marcadores (filas=local, cols=visitante) del Poisson bivariante."""
-    M = np.array([[biv_score_proba(x, y, mu_h, mu_a, lam3)
-                   for y in range(MAX_GOLES + 1)]
-                  for x in range(MAX_GOLES + 1)])
+def matriz_marcadores(mu_h, mu_a, lam3=0.0, nb_alpha=0.0):
+    """Matriz de marcadores (filas=local, cols=visitante)."""
+    if nb_alpha > 0:
+        p_h = np.array([negbin_pmf(x, mu_h, nb_alpha) for x in range(MAX_GOLES + 1)])
+        p_a = np.array([negbin_pmf(y, mu_a, nb_alpha) for y in range(MAX_GOLES + 1)])
+        M = np.outer(p_h, p_a)
+    else:
+        M = np.array([[biv_score_proba(x, y, mu_h, mu_a, lam3)
+                       for y in range(MAX_GOLES + 1)]
+                      for x in range(MAX_GOLES + 1)])
     return M / M.sum()
 
-def matriz_1x2(mu_h, mu_a, lam3=0.0):
+def matriz_1x2(mu_h, mu_a, lam3=0.0, nb_alpha=0.0):
     """P(local), P(empate), P(visitante) a partir de la matriz de marcadores."""
-    m = matriz_marcadores(mu_h, mu_a, lam3)
+    m = matriz_marcadores(mu_h, mu_a, lam3, nb_alpha)
     return np.tril(m, -1).sum(), np.trace(m), np.triu(m, 1).sum()
 
-def predict_1x2(model, wide, lam3=0.0):
+def predict_1x2(model, wide, lam3=0.0, nb_alpha=0.0):
     """Devuelve P[N,3] (H,D,A) para un conjunto de partidos en formato ancho."""
     lh = np.clip(model.predict(lado(wide, "home")[FEATURES]), CLIP_LO, CLIP_HI)
     la = np.clip(model.predict(lado(wide, "away")[FEATURES]), CLIP_LO, CLIP_HI)
-    return np.array([matriz_1x2(a, b, lam3) for a, b in zip(lh, la)])
+    return np.array([matriz_1x2(a, b, lam3, nb_alpha) for a, b in zip(lh, la)])
 
 def estimar_lambda3(model, wide, half_life=None):
     """Estima lambda3 (covarianza del bivariante) por maxima verosimilitud
@@ -181,7 +206,7 @@ def fit_calibrador(P_raw, y, weights=None):
 def aplicar_calibrador(cal, P_raw):
     return cal.predict_proba(np.log(np.clip(P_raw, 1e-6, 1.0)))
 
-def calibrador_oof(wide_train, rho=0.0, half_life=None, n_folds=N_FOLDS):
+def calibrador_oof(wide_train, rho=0.0, half_life=None, nb_alpha=0.0, n_folds=N_FOLDS):
     """Predicciones out-of-fold con CV temporal -> calibrador sin fuga."""
     w = wide_train.sort_values("date").reset_index(drop=True)
     idx = np.array_split(np.arange(len(w)), n_folds)
@@ -190,7 +215,7 @@ def calibrador_oof(wide_train, rho=0.0, half_life=None, n_folds=N_FOLDS):
         tr = w.iloc[np.concatenate(idx[:i])]
         va = w.iloc[idx[i]]
         m_i = entrenar(tr, half_life)
-        P_list.append(predict_1x2(m_i, va, rho))
+        P_list.append(predict_1x2(m_i, va, rho, nb_alpha))
         y_list.append(va["resultado"].map(RES2IDX).to_numpy())
         wv = peso_temporal(va["date"], half_life)
         wt_list.append(np.ones(len(va)) if wv is None else wv.to_numpy())
@@ -199,7 +224,7 @@ def calibrador_oof(wide_train, rho=0.0, half_life=None, n_folds=N_FOLDS):
     wt_oof = np.concatenate(wt_list)
     return fit_calibrador(P_oof, y_oof, wt_oof if half_life is not None else None)
 
-def oof_logloss(wide_train, half_life, n_folds=N_FOLDS):
+def oof_logloss(wide_train, half_life, model_params=None, n_folds=N_FOLDS):
     """Log-loss out-of-fold (CV temporal) para elegir la semivida sin tocar el test."""
     w = wide_train.sort_values("date").reset_index(drop=True)
     idx = np.array_split(np.arange(len(w)), n_folds)
@@ -207,12 +232,57 @@ def oof_logloss(wide_train, half_life, n_folds=N_FOLDS):
     for i in range(1, n_folds):
         tr = w.iloc[np.concatenate(idx[:i])]
         va = w.iloc[idx[i]]
-        m_i = entrenar(tr, half_life)
-        P = predict_1x2(m_i, va, 0.0)
+        m_i = entrenar(tr, half_life, model_params)
+        P = predict_1x2(m_i, va, 0.0, NB_ALPHA)
         y = va["resultado"].map(RES2IDX).to_numpy()
         ll, _, _ = eval_probs(P, y)
         ll_sum += ll * len(y); n_sum += len(y)
     return ll_sum / n_sum
+
+def tune_hyperparams(wide_train, half_life, n_iter=20, random_state=42):
+    """Random search temporal para hiperparámetros de LightGBM.
+
+    Usa `oof_logloss` con ventana expansiva para comparar configuraciones.
+    """
+    param_dist = {
+        'num_leaves': [15, 31, 63],
+        'min_child_samples': [10, 30, 50, 100],
+        'learning_rate': [0.01, 0.03, 0.05],
+        'n_estimators': [200, 350, 500],
+        'reg_lambda': [0.0, 0.5, 1.0],
+        'subsample': [0.6, 0.8, 1.0],
+        'colsample_bytree': [0.6, 0.8, 1.0],
+    }
+    sampler = ParameterSampler(param_dist, n_iter=n_iter, random_state=random_state)
+    best = None
+    best_score = float('inf')
+    for i, params in enumerate(sampler):
+        score = oof_logloss(wide_train, half_life, model_params=params)
+        print(f"Tuning {i+1}/{n_iter}: score={score:.4f} params={params}")
+        if score < best_score:
+            best_score = score
+            best = params
+    print(f"\nMejor params (oof): {best} score={best_score:.4f}")
+    return best, best_score
+def estimar_nb_alpha(wide_train, half_life=None, n_folds=N_FOLDS):
+    """Estima una dispersion global por momentos usando predicciones out-of-fold."""
+    w = wide_train.sort_values("date").reset_index(drop=True)
+    idx = np.array_split(np.arange(len(w)), n_folds)
+    numerador, denominador = 0.0, 0.0
+    for i in range(1, n_folds):
+        tr = w.iloc[np.concatenate(idx[:i])]
+        va = w.iloc[idx[i]]
+        m_i = entrenar(tr, half_life)
+        long_va = long_from_wide(va)
+        mu = np.clip(m_i.predict(long_va[FEATURES]), CLIP_LO, CLIP_HI)
+        y = long_va["goals"].to_numpy(dtype=float)
+        wv = peso_temporal(long_va["date"], half_life)
+        wt = np.ones(len(long_va)) if wv is None else wv.to_numpy()
+        numerador += np.sum(wt * (((y - mu) ** 2) - y))
+        denominador += np.sum(wt * (mu ** 2))
+    if denominador <= 0:
+        return 0.0
+    return float(max(numerador / denominador, 0.0))
 
 # ----------------------------------------------------------------------
 # 4. Metricas
@@ -270,45 +340,52 @@ BEST_HL = min(ll_por_hl, key=ll_por_hl.get)
 print(f"  -> elegido: "
       f"{'sin decaimiento' if BEST_HL is None else f'half-life = {BEST_HL} anios'}")
 
+# Si se llama con 'tune', ejecutar la búsqueda de hiperparámetros temporal
+import sys
+if 'tune' in sys.argv:
+    print("Ejecutando tuning temporal de hiperparámetros...")
+    best, score = tune_hyperparams(train_wide, BEST_HL, n_iter=20, random_state=42)
+    print(f"Tuning completado. Mejor score {score:.4f}, params: {best}")
+    sys.exit(0)
+
 model         = entrenar(train_wide, BEST_HL)     # modelo final (con decaimiento)
 model_nodecay = entrenar(train_wide, None)        # referencia sin decaimiento
 
-# Poisson bivariante: estimar lambda3 (covarianza entre los goles de ambos equipos)
-LAMBDA3 = estimar_lambda3(model, train_wide, BEST_HL)
-print(f"\nPoisson bivariante  lambda3 = {LAMBDA3:.4f}  "
-      f"(covarianza; sube la probabilidad de empate)")
+NB_ALPHA = estimar_nb_alpha(train_wide, BEST_HL)
+print(f"\nSobredispersion global NB_ALPHA = {NB_ALPHA:.4f}  "
+      f"(si es > 0, ensancha la cola de marcadores)")
 
 print("Ajustando calibrador (CV temporal out-of-fold)...")
-cal = calibrador_oof(train_wide, LAMBDA3, BEST_HL)
+cal = calibrador_oof(train_wide, 0.0, BEST_HL, NB_ALPHA)
 
 y_test = test_wide["resultado"].map(RES2IDX).to_numpy()
-P_nodec = predict_1x2(model_nodecay, test_wide, lam3=0.0)     # sin decaimiento
-P_ind   = predict_1x2(model, test_wide, lam3=0.0)            # Poisson independiente
-P_biv   = predict_1x2(model, test_wide, lam3=LAMBDA3)        # Poisson bivariante
-P_full  = aplicar_calibrador(cal, P_biv)                     # + calibracion
+P_nodec = predict_1x2(model_nodecay, test_wide, lam3=0.0, nb_alpha=0.0)   # sin decaimiento
+P_poiss = predict_1x2(model, test_wide, lam3=0.0, nb_alpha=0.0)           # Poisson independiente
+P_nb    = predict_1x2(model, test_wide, lam3=0.0, nb_alpha=NB_ALPHA)       # NB sobre-disperso
+P_full  = aplicar_calibrador(cal, P_nb)                                    # + calibracion
 
 print("\n--- Validacion 1X2 sobre el test (>= 2018) ---")
 print(f"{'':28}{'Log-loss':>10}{'Brier':>9}{'Accuracy':>10}{'ECE':>8}")
 for nombre, P in [("Poisson indep. sin decay", P_nodec),
-                  ("Poisson indep. con decay", P_ind),
-                  ("Poisson bivariante", P_biv),
+                  ("Poisson indep. con decay", P_poiss),
+                  ("NegBin sobre-disperso", P_nb),
                   ("+ calibracion (final)", P_full)]:
     ll, br, ac = eval_probs(P, y_test)
     print(f"{nombre:28}{ll:>10.4f}{br:>9.4f}{ac:>10.3f}{ece(P, y_test):>8.4f}")
 print(f"{'Baseline (uniforme)':28}{np.log(3):>10.4f}{'':>9}"
       f"{test_wide['resultado'].value_counts(normalize=True).max():>10.3f}")
 
-print("\nEfecto del bivariante en los marcadores bajos (medias en el test):")
-def prob_marcador(P_wide, lam3, x, y):
+print("\nEfecto de la sobre-dispersion en los marcadores bajos (medias en el test):")
+def prob_marcador(P_wide, nb_alpha, x, y):
     lh = np.clip(model.predict(lado(P_wide, "home")[FEATURES]), CLIP_LO, CLIP_HI)
     la = np.clip(model.predict(lado(P_wide, "away")[FEATURES]), CLIP_LO, CLIP_HI)
-    return np.mean([matriz_marcadores(a, b, lam3)[x, y] for a, b in zip(lh, la)])
+    return np.mean([matriz_marcadores(a, b, 0.0, nb_alpha)[x, y] for a, b in zip(lh, la)])
 real = test_wide["home_score"].astype(str) + "-" + test_wide["away_score"].astype(str)
 for (x, y) in [(0, 0), (1, 1), (1, 0), (0, 1)]:
     p_ind = prob_marcador(test_wide, 0.0, x, y)
-    p_biv = prob_marcador(test_wide, LAMBDA3, x, y)
+    p_nb = prob_marcador(test_wide, NB_ALPHA, x, y)
     p_real = (real == f"{x}-{y}").mean()
-    print(f"  {x}-{y}:  indep {p_ind*100:4.1f}%  ->  biv {p_biv*100:4.1f}%   (real {p_real*100:4.1f}%)")
+    print(f"  {x}-{y}:  indep {p_ind*100:4.1f}%  ->  NB {p_nb*100:4.1f}%   (real {p_real*100:4.1f}%)")
 
 print("\nFiabilidad del modelo final (confianza vs acierto real):")
 print(f"  {'rango':>10}{'n':>6}{'conf_media':>12}{'acierto':>10}")
@@ -319,7 +396,8 @@ for rango, nbin, conf, acc in tabla_fiabilidad(P_full, y_test):
 # 6. Guardar modelo + calibrador + rho + estado de cada seleccion
 # ----------------------------------------------------------------------
 with open(MODEL_PATH, "wb") as f:
-    pickle.dump({"model": model, "calibrator": cal, "lambda3": LAMBDA3,
+    pickle.dump({"model": model, "calibrator": cal, "lambda3": 0.0,
+                 "score_model": "negbin", "nb_alpha": NB_ALPHA,
                  "half_life": BEST_HL,
                  "features": FEATURES, "max_goles": MAX_GOLES}, f)
 print(f"\nOK {MODEL_PATH}")

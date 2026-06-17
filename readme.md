@@ -92,32 +92,38 @@ Cobertura típica: 19–26 de los 26 jugadores por selección.
 > sí es temporal (pre-partido).
 
 ### Modelo (paso 8)
-**Modelo de goles Poisson** (`scripts/train_model.py`):
+**Modelo de goles (LightGBM + opciones sobre-dispersas)** (`scripts/train_model.py`):
 
 - Formato largo: cada partido → 2 filas (perspectiva de cada equipo que marca).
 - `LightGBM` con objetivo `poisson` predice los goles esperados (λ) de un equipo
   contra otro a partir de `elo_diff`, ventaja de campo y features de plantilla.
-- **Decaimiento temporal**: cada partido pesa `0.5^(años/semivida)`, así los
-  recientes influyen más. La semivida (**8 años**) se elige por CV temporal
-  *out-of-fold* sobre el train, sin tocar el test.
-- **Poisson bivariante** (Karlis & Ntzoufras): un término de covarianza
-  `λ₃` (estimado por máxima verosimilitud, **λ₃ ≈ 0,13**) modela la correlación
-  entre los goles de ambos equipos de forma general — sustituye al parche de
-  Dixon–Coles. Lleva la probabilidad de 0-0 de 8,7 % a **9,9 %** (real 9,7 %).
+- **Decaimiento temporal**: cada partido pesa `0.5^(años/semivida)`; la semivida
+  se elige por CV temporal *out-of-fold* (ej. 8 años en la configuración actual).
+- **Sobre-dispersión (NegBin)** opcional: se estima una `nb_alpha` global por
+  momentos/OoF y, si `nb_alpha>0`, las predicciones de marcadores usan la
+  distribución Negative-Binomial marginal en vez de Poisson independiente.
+  Esto ensancha la cola de marcadores (más probabilidad para 2-0, 3-0, 0-3, ...)
+  sin forzar sesgos artificiales.
+- **Poisson bivariante** (Karlis & Ntzoufras) sigue disponible y modela la
+  correlación entre goles en el paquete final cuando `nb_alpha==0`.
 - **Calibración probabilística** (Platt multiclase con CV temporal *out-of-fold*):
-  pulido final del 1X2. Decaimiento, bivariante y calibración se **componen**.
+  pulido final del 1X2. Decaimiento, bivariante/NegBin y calibración se combinan.
 - **Explicabilidad (SHAP)**: el predictor muestra *por qué* da cada pronóstico,
   vía las contribuciones nativas de LightGBM (`pred_contrib`).
-- Validación **temporal** (entrena < 2018, valida ≥ 2018, incluye Mundiales
-  2018 y 2022). Cada capa mejora las métricas sobre el 1X2 derivado de los dos λ:
 
-  | Capa (acumulativa) | Log-loss | Brier | ECE | Accuracy |
-  |---|---|---|---|---|
-  | Poisson independiente | 1.003 | 0.601 | 0.048 | 51.0 % |
-  | + decaimiento temporal | 0.998 | 0.597 | 0.039 | 50.7 % |
-  | + Poisson bivariante | 0.998 | 0.598 | 0.036 | 50.5 % |
-  | **+ calibración (final)** | **0.995** | **0.595** | **0.023** | 51.0 % |
-  | Baseline uniforme | 1.099 | — | — | 44.8 % |
+Validación y tuning
+
+- El script `train_model.py` realiza validación temporal para elegir la semivida
+  y puede ejecutar una búsqueda aleatoria temporal de hiperparámetros:
+
+```bash
+# Buscar hiperparámetros (Random search temporal, 20 iters)
+python scripts/train_model.py tune
+```
+
+La mejor configuración OOF se puede usar para reentrenar definitivamente el
+modelo y el bundle guardado (`modelos/goal_model.pkl`) incluye ahora metadatos:
+`nb_alpha` (si ≠ 0), `score_model` (`negbin` cuando procede) y las `features`.
 
 **Simulación Monte Carlo** (`scripts/simulate_tournament.py`):
 
@@ -157,6 +163,10 @@ La columna opcional **`local`** controla la ventaja de campo: vacía → automá
 (el anfitrión del Mundial juega en casa); `neutral` → fuerza campo neutral; un
 equipo → ese equipo es local. Salida en `datos/master/predicciones_partidos.csv`.
 
+Histórico: el script también **anexa** las mismas filas a
+`datos/master/historial_predicciones_partidos.csv` (crea la cabecera si no existe),
+manteniendo un histórico cronológico de las ejecuciones de predicción.
+
 ---
 
 ## Cómo ejecutar
@@ -165,10 +175,17 @@ equipo → ese equipo es local. Salida en `datos/master/predicciones_partidos.cs
 # Pipeline completo (pasos 4 → 9)
 python scripts/run_pipeline.py
 
+# Buscar hiperparámetros (tuning temporal — recomendable antes de reentrenar)
+python scripts/train_model.py tune
+
+# Reentrenar el modelo final (usa los params hallados si quieres aplicarlos)
+python scripts/train_model.py
+
 # Solo re-simular el torneo (con N simulaciones)
 python scripts/simulate_tournament.py 10000
 
-# Predecir partidos concretos (lee datos/master/fixtures.csv)
+# Predecir partidos concretos (lee datos/master/fixtures.csv).
+# El script genera datos/master/predicciones_partidos.csv y anexa al historial.
 python scripts/predict_fixtures.py
 ```
 
@@ -200,10 +217,11 @@ Modelo Mundial/
 │       ├── groups_2026.csv       # Cuadro de grupos (editable)
 │       ├── predicciones_mundial2026.csv  # Salida de la simulación
 │       ├── fixtures.csv          # Partidos a predecir (editable)
-│       └── predicciones_partidos.csv     # Salida partido a partido
+│       ├── predicciones_partidos.csv     # Salida partido a partido
+│       └── historial_predicciones_partidos.csv # Histórico acumulado de predicciones
 │
 ├── modelos/
-│   └── goal_model.pkl            # Modelo Poisson entrenado
+│   └── goal_model.pkl            # Modelo entrenado (incluye metadatos: nb_alpha, score_model)
 │
 └── scripts/
     ├── fetch_convocatoria.py     # Descarga convocatorias de football-data.org
@@ -223,22 +241,14 @@ Modelo Mundial/
 
 Ideas para seguir desarrollando el proyecto, de mayor a menor impacto:
 
-- **⭐ Evaluar el modelo contra los resultados reales.** A medida que se juega el
-  Mundial, introducir los marcadores reales y que el sistema **devuelva el
-  rendimiento del modelo**: aciertos del 1X2, log-loss y Brier sobre los partidos
-  ya disputados, y una curva de fiabilidad (¿el "60 %" predicho acabó siendo ~60 %?).
-  Sería un script `evaluar_resultados.py` que lee `predicciones_partidos.csv` + los
-  resultados reales y saca un cuadro de mando de cómo de bien predijo el modelo —
-  el cierre natural del proyecto y la prueba definitiva de su calidad.
-- **Comparar contra las casas de apuestas.** Enfrentar las probabilidades del
-  modelo a las cuotas reales del mercado para detectar **apuestas de valor** (donde
-  el modelo ve más probabilidad que la cuota implícita) y medir rentabilidad simulada.
-- **Bracket oficial** exacto de la FIFA en la simulación (hoy se siembra por
-  rendimiento en grupos como aproximación).
 - **Más features contextuales**: días de descanso entre partidos, distancia de
   viaje, altitud (Ciudad de México), clima.
 - **Forma reciente y bajas**: racha de resultados de los últimos meses y
   lesiones/sanciones de última hora.
+- **Modelado ataque / defensa**: entrenar modelos separados para fuerza ofensiva
+  y defensiva por selección y combinarlos mejora la cola de marcadores altos.
+- **Búsqueda de hiperparámetros temporal**: tuning (`train_model.py tune`) con
+  validación expandida suele mejorar lambdas y la capacidad de predecir scores altos.
 - **Intervalos de incertidumbre** en las probabilidades de campeón (error de
   Monte Carlo / bandas de confianza), no solo el porcentaje puntual.
 - **Pipeline automatizado**: refrescar Elo y convocatorias vía API de forma

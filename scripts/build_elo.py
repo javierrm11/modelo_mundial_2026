@@ -22,7 +22,7 @@ OUT_PATH = "datos/master/elo_por_partido.csv"
 ELO_INICIO = 1500
 K_MUNDIAL  = 40
 K_COMP     = 30   # competición seria
-K_AMISTOSO = 20
+K_AMISTOSO = 5
 
 MUNDIAL_EXACT = {"FIFA World Cup"}
 

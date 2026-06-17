@@ -22,7 +22,7 @@ import csv
 import pickle
 import unicodedata
 import difflib
-from math import exp, factorial, comb
+from math import exp, factorial, comb, lgamma
 import numpy as np
 import pandas as pd
 
@@ -30,6 +30,7 @@ MODEL_PATH   = "modelos/goal_model.pkl"
 STATE_PATH   = "datos/master/team_state_2026.csv"
 DEFAULT_FIX  = "datos/master/fixtures.csv"
 OUT_PATH     = "datos/master/predicciones_partidos.csv"
+HIST_PATH    = "datos/master/historial_predicciones_partidos.csv"
 
 MAX_GOLES = 10
 CLIP_LO, CLIP_HI = 0.05, 6.0
@@ -46,6 +47,8 @@ model      = bundle["model"]
 FEATURES   = bundle["features"]
 CALIBRATOR = bundle.get("calibrator")     # Platt multiclase (puede faltar en pkl viejos)
 LAMBDA3    = bundle.get("lambda3", 0.0)   # covarianza del Poisson bivariante
+SCORE_MODEL = bundle.get("score_model", "bivar_poisson")
+NB_ALPHA   = float(bundle.get("nb_alpha", 0.0) or 0.0)
 
 state = pd.read_csv(STATE_PATH)
 ST = {}
@@ -192,10 +195,26 @@ def biv_score_proba(x, y, mu_h, mu_a, lam3):
         s += (comb(x, k) * comb(y, k) * FACT[k]) * (l3 / (l1 * l2))**k
     return exp(-(l1 + l2 + l3)) * l1**x / FACT[x] * l2**y / FACT[y] * s
 
-def matriz_marcadores(lh, la, maxg=MAX_GOLES, lam3=LAMBDA3):
-    """Matriz de marcadores del Poisson bivariante (filas=local, cols=visitante)."""
-    M = np.array([[biv_score_proba(x, y, lh, la, lam3) for y in range(maxg + 1)]
-                  for x in range(maxg + 1)])
+def negbin_pmf(k, mu, alpha):
+    if alpha <= 0:
+        return exp(-mu) * mu**k / FACT[k]
+    r = 1.0 / alpha
+    log_p = (
+        lgamma(k + r) - lgamma(r) - lgamma(k + 1)
+        + r * np.log(r / (r + mu))
+        + k * np.log(mu / (r + mu))
+    )
+    return exp(log_p)
+
+def matriz_marcadores(lh, la, maxg=MAX_GOLES, lam3=LAMBDA3, nb_alpha=NB_ALPHA):
+    """Matriz de marcadores."""
+    if SCORE_MODEL == "negbin" and nb_alpha > 0:
+        p_h = np.array([negbin_pmf(x, lh, nb_alpha) for x in range(maxg + 1)])
+        p_a = np.array([negbin_pmf(y, la, nb_alpha) for y in range(maxg + 1)])
+        M = np.outer(p_h, p_a)
+    else:
+        M = np.array([[biv_score_proba(x, y, lh, la, lam3) for y in range(maxg + 1)]
+                      for x in range(maxg + 1)])
     return M / M.sum()
 
 def probs_1x2(m):
@@ -215,6 +234,19 @@ def calibrar(ph, pd_, pa):
 def top_marcadores(m, n=5):
     idx = np.dstack(np.unravel_index(np.argsort(m.ravel())[::-1], m.shape))[0]
     return [((int(i), int(j)), float(m[i, j])) for i, j in idx[:n]]
+
+def guardar_resultados(filas, campos):
+    with open(OUT_PATH, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=campos)
+        w.writeheader()
+        w.writerows(filas)
+
+    nuevo_historial = not os.path.exists(HIST_PATH) or os.path.getsize(HIST_PATH) == 0
+    with open(HIST_PATH, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=campos)
+        if nuevo_historial:
+            w.writeheader()
+        w.writerows(filas)
 
 # ----------------------------------------------------------------------
 # Eliminatoria: P(home pasa) con prorroga (lambda*1/3) + penaltis por Elo
@@ -293,10 +325,7 @@ def main():
                   "lambda_home", "lambda_away",
                   "p_home", "p_draw", "p_away", "marcador_top1",
                   "p_pasa_home", "p_pasa_away"]
-        with open(OUT_PATH, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=campos)
-            w.writeheader()
-            w.writerows(salida)
+        guardar_resultados(salida, campos)
         print(f"\nOK {OUT_PATH}  ({len(salida)} partidos)")
 
 if __name__ == "__main__":
